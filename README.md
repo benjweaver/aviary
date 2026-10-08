@@ -32,7 +32,7 @@ Run `./release-portable.ps1` to produce a self-contained Windows x64 app and ZIP
 
 The `portable.txt` marker keeps settings and new machines in `Data` beside the executable. Shut machines down before moving the folder. Managed disks and ISOs inside the portable folder use relative saved paths so they survive relocation; files outside that folder remain external. Keep `Data` when updating. Portable mode has its own library and does not automatically move your existing local machines.
 
-Software emulation does not require WHPX. Hardware acceleration still needs the Windows feature and firmware virtualization; work PCs remain subject to IT application policies. This is a local development package, not a signed public installer. Public distribution needs the applicable third-party notices and source obligations completed.
+Software emulation does not require WHPX. Hardware acceleration still needs the Windows feature and firmware virtualization; work PCs remain subject to IT application policies. The package is not code-signed. It bundles QEMU, whose license files are in `runtime/qemu`; see Contributing and licenses for its source.
 
 ## Install, update and uninstall
 
@@ -184,7 +184,7 @@ Next milestones: harden lifecycle and input UX, verify WHPX on supported hardwar
 
 Build the complete solution and run tests for each change. Keep configuration versioned, flags outside view models and I/O asynchronous. Preserve valid configurations and never delete user disks as implicit cleanup. Include manual Windows UI checks for UI changes.
 
-Aviary source is MIT licensed. QEMU remains a separate GPL-licensed engine and is excluded from Git. Windows App SDK and CommunityToolkit.Mvvm use MIT licenses. Downloaded tools and guest images retain their own licenses. Bundling third-party binaries in a distributable requires their notices and applicable source/distribution obligations.
+Aviary is licensed GPL-3.0-or-later; see [LICENSE](LICENSE). Release packages bundle unmodified QEMU 11.1.0 (qemu-w64-setup-20260811 by Stefan Weil, git e470268ff4). Source: https://gitlab.com/qemu-project/qemu/-/tree/e470268ff4 and https://www.qemu.org/download/#source. QEMU is GPL-2.0 licensed and its COPYING files ship in `runtime/qemu`. Windows App SDK and CommunityToolkit.Mvvm use MIT licenses. Guest images retain their own licenses.
 
 
 

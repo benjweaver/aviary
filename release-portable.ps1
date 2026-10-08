@@ -48,8 +48,8 @@ Portable packaging does not bypass workplace application-control or security pol
 QEMU is a separate GPL-licensed engine; its bundled COPYING and COPYING.LIB files
 are in runtime/qemu. Windows builds: https://qemu.weilnetz.de/w64/
 Upstream source: https://www.qemu.org/download/#source
-This is a local development release; public redistribution requires the applicable
-third-party notices and corresponding-source obligations to be fulfilled.
+Bundled build: QEMU 11.1.0 (qemu-w64-setup-20260811 by Stefan Weil, git e470268ff4). Source: https://gitlab.com/qemu-project/qemu/-/tree/e470268ff4 and https://www.qemu.org/download/#source
+Aviary is GPL-3.0-or-later (LICENSE-Aviary.txt); source: https://github.com/benjweaver/aviary
 '@ | Set-Content -LiteralPath "$destination\READ-ME.txt"
 if(!$SkipArchive){
  # The folder inside stays named Aviary in every release; the archive carries the version.
