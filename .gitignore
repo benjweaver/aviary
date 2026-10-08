@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.build/
+.packages/
+.tools/
+.vs/
+.wix/
+*.lnk
+*.user
+*.qcow2
+*.raw
+*.iso
+*.tmp

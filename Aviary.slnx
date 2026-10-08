@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Aviary.App/Aviary.App.csproj" />
+    <Project Path="src/Aviary.Core/Aviary.Core.csproj" />
+    <Project Path="src/Aviary.Infrastructure/Aviary.Infrastructure.csproj" />
+    <Project Path="src/Aviary.Qemu/Aviary.Qemu.csproj" />
+    <Project Path="src/Aviary.Qmp/Aviary.Qmp.csproj" />
+    <Project Path="src/Aviary.Tests/Aviary.Tests.csproj" />
+  </Folder>
+</Solution>

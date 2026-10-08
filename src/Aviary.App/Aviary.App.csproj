@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows10.0.19041.0</TargetFramework><TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion><UseWinUI>true</UseWinUI><WindowsPackageType>None</WindowsPackageType><WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained><RuntimeIdentifier>win-x64</RuntimeIdentifier><PlatformTarget>x64</PlatformTarget><ApplicationManifest>app.manifest</ApplicationManifest></PropertyGroup>
+ <ItemGroup><PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001"/><PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0"/><ProjectReference Include="../Aviary.Qemu/Aviary.Qemu.csproj"/></ItemGroup>
+ <PropertyGroup><ApplicationIcon>Assets\Aviary.ico</ApplicationIcon></PropertyGroup>
+ <ItemGroup><Content Include="Assets\Aviary.ico;Assets\Aviary.svg;Assets\Aviary.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
+ <Target Name="CopyWinUiPublishResources" AfterTargets="Publish">
+  <ItemGroup><WinUiPublishResource Include="$(TargetDir)$(AssemblyName).pri;$(TargetDir)App.xbf" /></ItemGroup>
+  <Copy SourceFiles="@(WinUiPublishResource)" DestinationFolder="$(PublishDir)" />
+ </Target>
+ <!-- Experimental Hyper-V GPU partitioning: build with -p:EnableGpuPartition=true to include it. -->
+ <PropertyGroup Condition="'$(EnableGpuPartition)' == 'true'"><DefineConstants>$(DefineConstants);AVIARY_GPU_PARTITION</DefineConstants></PropertyGroup>
+ <ItemGroup Condition="'$(EnableGpuPartition)' == 'true'"><Content Include="../../packaging/windows/setup-hyperv-gpu.ps1" Link="Tools/setup-hyperv-gpu.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
+</Project>

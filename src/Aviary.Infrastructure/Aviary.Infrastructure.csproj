@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Aviary.Core/Aviary.Core.csproj" /></ItemGroup><ItemGroup><EmbeddedResource Include="GuestSetup/*" /></ItemGroup></Project>
