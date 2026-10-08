@@ -22,7 +22,7 @@ public sealed class VmStore(string root, string? portableRoot = null)
         vm.Validate(); var dir = DirectoryFor(vm.Id); Directory.CreateDirectory(dir);
         var target = Path.Combine(dir, "config.json"); var temporary = target + "." + Guid.NewGuid() + ".tmp";
         string StoredPath(string path) => portableRoot is not null && !string.IsNullOrEmpty(path) && Path.GetFullPath(path).StartsWith(Path.TrimEndingDirectorySeparator(Path.GetFullPath(portableRoot)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ? Path.GetRelativePath(dir, path) : path;
-        var saved = vm with { DiskPath = StoredPath(vm.DiskPath), IsoPath = StoredPath(vm.IsoPath), SetupIsoPath = StoredPath(vm.SetupIsoPath) };
+        var saved = vm with { DiskPath = StoredPath(vm.DiskPath), IsoPath = StoredPath(vm.IsoPath), SetupIsoPath = StoredPath(vm.SetupIsoPath), DriverIsoPath = StoredPath(vm.DriverIsoPath) };
         try { await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(saved, Json), token); File.Move(temporary, target, true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
@@ -37,7 +37,7 @@ public sealed class VmStore(string root, string? portableRoot = null)
                 var vm = Deserialize(await File.ReadAllTextAsync(file)); var directory = DirectoryFor(vm.Id);
                 if (Path.GetFullPath(Path.GetDirectoryName(file)!) != directory) throw new InvalidDataException("VM directory and ID do not match.");
                 string ResolvedPath(string path) => string.IsNullOrEmpty(path) ? path : Path.GetFullPath(path, directory);
-                vms.Add(vm with { DiskPath = ResolvedPath(vm.DiskPath), IsoPath = ResolvedPath(vm.IsoPath), SetupIsoPath = ResolvedPath(vm.SetupIsoPath) });
+                vms.Add(vm with { DiskPath = ResolvedPath(vm.DiskPath), IsoPath = ResolvedPath(vm.IsoPath), SetupIsoPath = ResolvedPath(vm.SetupIsoPath), DriverIsoPath = ResolvedPath(vm.DriverIsoPath) });
             }
             catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException or ArgumentException) { errors.Add($"{file}: {ex.Message}"); }
         }

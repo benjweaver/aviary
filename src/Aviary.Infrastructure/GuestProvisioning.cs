@@ -20,13 +20,17 @@ public static class GuestProvisioning
     public static string AccessDirectory(string machineDirectory) => Path.Combine(machineDirectory, "access");
     public static string ConfigPath(string machineDirectory) => Path.Combine(AccessDirectory(machineDirectory), "ssh_config");
     public static string SshCommand(string machineDirectory) => "ssh -F '" + ConfigPath(machineDirectory).Replace("'", "''") + "' guest";
-    public static string WindowsAnswerFile(string username, string password)
+    // The guest-tools install runs at first sign-in, finding the driver CD by its installer since drive letters vary.
+    public static string VirtioToolsCommand => $"cmd /c for %d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{VirtioDrivers.GuestToolsInstaller} start /wait msiexec /i %d:\\{VirtioDrivers.GuestToolsInstaller} /qn /norestart";
+    public static string WindowsAnswerFile(string username, string password, bool installVirtioTools = false)
     {
         if (!Regex.IsMatch(username, "^[a-zA-Z][a-zA-Z0-9_-]{0,19}$") || password.Length < 12) throw new InvalidDataException("Choose a local username and a password of at least 12 characters.");
         XNamespace ns = "urn:schemas-microsoft-com:unattend", wcm = "http://schemas.microsoft.com/WMIConfig/2002/State";
         return new XDocument(new XElement(ns + "unattend", new XAttribute(XNamespace.Xmlns + "wcm", wcm),
             new XElement(ns + "settings", new XAttribute("pass", "oobeSystem"),
                 new XElement(ns + "component", new XAttribute("name", "Microsoft-Windows-Shell-Setup"), new XAttribute("processorArchitecture", "amd64"), new XAttribute("publicKeyToken", "31bf3856ad364e35"), new XAttribute("language", "neutral"), new XAttribute("versionScope", "nonSxS"),
+                    installVirtioTools ? new XElement(ns + "FirstLogonCommands", new XElement(ns + "SynchronousCommand", new XAttribute(wcm + "action", "add"),
+                        new XElement(ns + "Order", 1), new XElement(ns + "CommandLine", VirtioToolsCommand), new XElement(ns + "Description", "Install VirtIO drivers (NetKVM)"))) : null,
                     new XElement(ns + "OOBE", new XElement(ns + "HideOnlineAccountScreens", true), new XElement(ns + "HideWirelessSetupInOOBE", true)),
                     new XElement(ns + "UserAccounts", new XElement(ns + "LocalAccounts", new XElement(ns + "LocalAccount", new XAttribute(wcm + "action", "add"),
                         new XElement(ns + "Name", username), new XElement(ns + "DisplayName", username), new XElement(ns + "Group", "Administrators"),
@@ -57,7 +61,7 @@ public static class GuestProvisioning
         var staging = Path.Combine(access, "media-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(staging);
         try
         {
-            if (vm.LocalWindowsAccount) await File.WriteAllTextAsync(Path.Combine(staging, "autounattend.xml"), WindowsAnswerFile(vm.WindowsUserName, vm.SetupPassword), token);
+            if (vm.LocalWindowsAccount) await File.WriteAllTextAsync(Path.Combine(staging, "autounattend.xml"), WindowsAnswerFile(vm.WindowsUserName, vm.SetupPassword, vm.DriverIsoPath.Length > 0), token);
             if (vm.SshEnabled)
             {
                 var key = Path.Combine(access, "id_ed25519");

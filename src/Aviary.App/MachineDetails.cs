@@ -56,6 +56,11 @@ public sealed partial class MainWindow
         if (state == VmStatus.Stopped || state == VmStatus.Error && vm.Engine == VmEngine.Qemu) Add("Edit configuration", Symbol.Edit, () => EditAsync(vm));
         Add("SSH access...", Symbol.Document, () => SshAccessAsync(vm));
         if (vm.SetupIsoPath.Length > 0 && state == VmStatus.Stopped) Add("Eject and remove setup CD", Symbol.Remove, () => EjectSetupAsync(vm));
+        if (vm.Engine == VmEngine.Qemu && vm.OperatingSystem == "Windows" && state == VmStatus.Stopped)
+        {
+            if (vm.DriverIsoPath.Length > 0) Add("Eject VirtIO driver CD", Symbol.Remove, () => EjectDriversAsync(vm));
+            else Add("Attach VirtIO driver CD…", Symbol.Add, () => AttachDriversAsync(vm));
+        }
         menu.Items.Add(new MenuFlyoutSeparator()); Add("Diagnostics", Symbol.Document, () => Diagnostics(vm));
         if (state is VmStatus.Stopped or VmStatus.Error) Add("Remove from library…", Symbol.Remove, async () => { if (await Confirm("Remove this machine?", "Its virtual disk will stay on your PC. This only removes the library entry.", "Remove")) { model.Store.RemoveFromLibrary(vm.Id); model.Machines.Remove(vm); previews.Remove(vm.Id); ShowLibrary(); } });
         return menu;
@@ -71,13 +76,13 @@ public sealed partial class MainWindow
         var acceleration = new ToggleSwitch { Header = "Hardware acceleration", OnContent = "WHPX", OffContent = "Software emulation", IsOn = vm.Acceleration == Acceleration.Whpx, IsEnabled = model.Host.WhpxAvailable || vm.Acceleration == Acceleration.Whpx };
         var dynamic = new ToggleSwitch { Header = "Adaptive display", OnContent = "VirtIO display · resize with window", OffContent = "Compatibility display", IsOn = vm.DynamicDisplay };
         var fastNetwork = new ToggleSwitch { Header = "VirtIO network", IsOn = vm.AcceleratedNetwork, OnContent = "Efficient virtual adapter", OffContent = "Compatibility adapter" };
-        var graphics = new ToggleSwitch { Header = "3D graphics (experimental)", IsOn = vm.AcceleratedGraphics, IsEnabled = vm.OperatingSystem == "Linux" && (vm.AcceleratedGraphics || model.Installation?.VirglAvailable == true), OnContent = "Host OpenGL · VirtIO", OffContent = "Software rendering" };
+        var graphics = new ToggleSwitch { Header = model.Installation?.VirglAvailable == true ? "3D graphics (experimental)" : "3D graphics (not available with this QEMU; uses 2D display)", IsOn = vm.AcceleratedGraphics, IsEnabled = vm.OperatingSystem == "Linux" && (vm.AcceleratedGraphics || model.Installation?.VirglAvailable == true), OnContent = "Host OpenGL · VirtIO", OffContent = "Software rendering" };
         graphics.Toggled += (_, _) => { if (graphics.IsOn) dynamic.IsOn = true; };
         dynamic.Toggled += (_, _) => { if (!dynamic.IsOn) graphics.IsOn = false; };
         var error = new InfoBar { IsOpen = false, IsClosable = false, Severity = InfoBarSeverity.Error };
         var panel = vm.Engine == VmEngine.HyperV
             ? Ui.Stack(name, iso, Ui.Text("Hyper-V applies the name and installer on the next start. Use Hyper-V Manager for hardware or Enhanced Session settings. The engine of an existing machine cannot be changed here.", 12, true), error)
-            : Ui.Stack(name, iso, acceleration, dynamic, graphics, fastNetwork, Ui.Text("VirtIO networking needs a guest driver (included in modern Linux; install NetKVM in Windows first). 3D requires Linux Mesa and a working host OpenGL driver. Turn it off if the guest display fails. Shared networking still uses NAT.", 12, true), Ui.Text("Adaptive display changes the virtual graphics adapter. Linux needs its virtio GPU driver; Windows needs a compatible driver installed. Changes take effect on the next start.", 12, true), error);
+            : Ui.Stack(name, iso, acceleration, dynamic, graphics, fastNetwork, Ui.Text("VirtIO networking needs a guest driver: modern Linux includes it; for Windows, attach the VirtIO driver CD from the machine menu and install the guest tools first. 3D graphics needs a QEMU build with working virgl, which Windows hosts lack; machines with it on use the 2D adaptive display. Shared networking still uses NAT.", 12, true), Ui.Text("Adaptive display changes the virtual graphics adapter. Linux needs its virtio GPU driver; Windows needs a compatible driver installed. Changes take effect on the next start.", 12, true), error);
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Edit configuration", Content = new ScrollViewer { Content = panel, MaxHeight = 480 }, PrimaryButtonText = "Save changes", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary };
         dialog.PrimaryButtonClick += async (_, e) =>
         {

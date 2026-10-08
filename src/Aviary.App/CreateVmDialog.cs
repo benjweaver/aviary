@@ -32,6 +32,7 @@ public sealed class CreateVmDialog : ContentDialog
     readonly ToggleSwitch dynamic = new() { Header = "Adaptive display", IsOn = true, OnContent = "Resize desktop with window", OffContent = "Compatibility graphics" };
     readonly ToggleSwitch fastNetwork = new() { Header = "VirtIO network", IsOn = true, OnContent = "Efficient virtual adapter", OffContent = "Compatibility adapter" };
     readonly ToggleSwitch graphics = new() { Header = "3D graphics (experimental)", OnContent = "Host OpenGL · Linux guests", OffContent = "Software rendering" };
+    readonly ToggleSwitch drivers = new() { Header = "VirtIO drivers", IsOn = true, OnContent = "Attach driver CD (NetKVM and more)", OffContent = "Don't attach" };
     readonly ToggleSwitch localAccount = new() { Header = "Local Windows account", IsOn = true, OnContent = "Skip Microsoft-account setup", OffContent = "Use standard Windows setup" };
     readonly TextBox localUser = new() { Header = "Local username", Text = "aviary", MaxLength = 20 };
     readonly PasswordBox localPassword = new() { Header = "Local password (12+ characters)" };
@@ -95,7 +96,12 @@ public sealed class CreateVmDialog : ContentDialog
                 body.Children.Add(disk); if (!Native) body.Children.Add(format); body.Children.Add(Ui.Text(Native ? "VHDX · a dynamically expanding Hyper-V disk. Native Hyper-V machines are registered on this PC; moving them requires Hyper-V export/import." : "QCOW2 reserves the capacity for the guest and uses host disk space as data is written. The initial file is small.", 13, true)); break;
             case 4:
                 network.OnContent = Native ? "Connected to selected switch" : "Shared with your PC";
-                body.Children.Add(Ui.Card(Ui.Stack(Ui.Icon("\uE774", 28), network, Ui.Text(Native ? "Choose an existing switch. Default Switch shares Windows networking. Aviary does not create or change host switches." : "The guest can access the internet through your PC. No administrator setup is required.", 13, true)))); if (Native) body.Children.Add(nativeSwitch); else { body.Children.Add(fastNetwork); body.Children.Add(Ui.Text("Modern Linux includes the VirtIO driver. For Windows, install NetKVM before enabling it. Uses shared NAT networking.", 12, true)); } break;
+                body.Children.Add(Ui.Card(Ui.Stack(Ui.Icon("\uE774", 28), network, Ui.Text(Native ? "Choose an existing switch. Default Switch shares Windows networking. Aviary does not create or change host switches." : "The guest can access the internet through your PC. No administrator setup is required.", 13, true)))); if (Native) body.Children.Add(nativeSwitch); else if (os.SelectedIndex == 1)
+                {
+                    body.Children.Add(drivers);
+                    body.Children.Add(Ui.Text((VirtioDrivers.IsCached ? "" : $"Downloads virtio-win {VirtioDrivers.Version} once ({VirtioDrivers.Size / 1_000_000} MB), shared by all Windows machines. ") + "With local-account setup the drivers install automatically at first sign-in; otherwise run virtio-win-guest-tools.exe from the CD. Windows starts on the compatibility adapter; turn on VirtIO network in Edit configuration once the drivers are in.", 12, true));
+                }
+                else { body.Children.Add(fastNetwork); body.Children.Add(Ui.Text("Modern Linux includes the VirtIO driver. Uses shared NAT networking.", 12, true)); } break;
             case 5:
                 body.Children.Add(ssh);
                 body.Children.Add(Ui.Text(Native ? "Run the setup script once in the guest, then connect to its IP. Default Switch keeps networking private to the host. The SSH account is a standard user." : "Run the setup script once in the guest. Aviary forwards SSH to this PC only and creates a standard user for Codex, Claude or your terminal.", 12, true));
@@ -145,10 +151,17 @@ public sealed class CreateVmDialog : ContentDialog
             ValidateStep();
             if (step < 6) { step++; ShowStep(); return; }
             creating = true; IsPrimaryButtonEnabled = false; IsSecondaryButtonEnabled = false; PrimaryButtonText = "Creating…"; progress.IsIndeterminate = true; error.IsOpen = false;
-            var vm = Configuration(); if (vm.SshEnabled && !Native) vm = vm with { SshPort = GuestProvisioning.AvailablePort() }; await model.CreateAsync(vm); CreatedVm = model.Machines.Single(item => item.Id == vm.Id); creating = false; e.Cancel = false;
+            var vm = Configuration(); if (vm.SshEnabled && !Native) vm = vm with { SshPort = GuestProvisioning.AvailablePort() };
+            if (!Native && os.SelectedIndex == 1 && drivers.IsOn)
+            {
+                if (!VirtioDrivers.IsCached) { PrimaryButtonText = "Downloading drivers…"; progress.IsIndeterminate = false; progress.Value = 0; }
+                vm = vm with { DriverIsoPath = await VirtioDrivers.EnsureAsync(new Progress<double>(fraction => progress.Value = fraction * progress.Maximum)) };
+                PrimaryButtonText = "Creating…"; progress.IsIndeterminate = true;
+            }
+            await model.CreateAsync(vm); CreatedVm = model.Machines.Single(item => item.Id == vm.Id); creating = false; e.Cancel = false;
         }
         catch (Exception ex) { error.Message = ex.Message; error.IsOpen = true; }
-        finally { creating = false; IsPrimaryButtonEnabled = true; IsSecondaryButtonEnabled = step > 0; PrimaryButtonText = step == 6 ? "Create machine" : "Continue"; progress.IsIndeterminate = false; deferral.Complete(); }
+        finally { creating = false; IsPrimaryButtonEnabled = true; IsSecondaryButtonEnabled = step > 0; PrimaryButtonText = step == 6 ? "Create machine" : "Continue"; progress.IsIndeterminate = false; progress.Value = step + 1; deferral.Complete(); }
     }
 #if DEBUG
     internal void PreviewWindowsSetup() { os.SelectedIndex = 1; ssh.IsOn = true; hyperV.IsEnabled = true; hyperV.IsChecked = true; step = 5; ShowStep(); }

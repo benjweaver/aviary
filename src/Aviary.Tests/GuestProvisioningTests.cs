@@ -30,7 +30,7 @@ public sealed class GuestProvisioningTests
     {
         var vm = new VmConfiguration { DiskPath = @"C:\VM\disk.qcow2", SshEnabled = true, SshPort = 22222, SetupIsoPath = @"C:\VM\setup.iso" };
         var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList;
-        Assert.Contains("user,model=e1000,hostfwd=tcp:127.0.0.1:22222-:22", args); Assert.Contains("ide-cd,drive=setup", args);
+        Assert.Contains("user,model=e1000,hostfwd=tcp:127.0.0.1:22222-:22", args); Assert.Contains("ide-cd,drive=setup,bus=ide.1,unit=0", args);
         Assert.Throws<InvalidDataException>(() => (vm with { NetworkEnabled = false }).Validate());
     }
     [Fact]

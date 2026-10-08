@@ -31,8 +31,24 @@ public sealed class AcceleratedDevicesTests
         Assert.Throws<InvalidDataException>(() => (vm with { DynamicDisplay = false }).Validate());
         Assert.Throws<InvalidDataException>(() => (vm with { Engine = VmEngine.HyperV }).Validate());
     }
+    [Theory]
+    [InlineData(false, "virtio-vga", "none")]
+    [InlineData(true, "virtio-vga-gl", "egl-headless")]
+    public void ThreeDUsesVirglOnlyWhereItWorks(bool virgl, string device, string display)
+    {
+        var vm = new VmConfiguration { DiskPath = @"C:\VM\system.qcow2", DynamicDisplay = true, AcceleratedGraphics = true };
+        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64], VirglAvailable: virgl), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList;
+        Assert.Equal(display, args[args.IndexOf("-display") + 1]);
+        Assert.Equal(device, args[args.IndexOf("-vga") + 3]);
+    }
+    [Fact]
+    public async Task WindowsQemuNeverAdvertisesVirgl()
+    {
+        if (!OperatingSystem.IsWindows() || Environment.GetEnvironmentVariable("AVIARY_QEMU") is not { Length: > 0 } path) return;
+        Assert.False((await QemuDiscovery.FindAsync(path))!.VirglAvailable);
+    }
     [QemuFact]
-    public async Task ThreeDAndVirtioNetworkStartWithEmbeddedDisplay()
+    public async Task SavedThreeDMachineStartsWithEmbeddedDisplay()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
         var directory = Path.Combine(Path.GetTempPath(), "aviary-gpu-" + Guid.NewGuid());

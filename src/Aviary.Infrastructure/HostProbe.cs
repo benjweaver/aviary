@@ -37,7 +37,10 @@ public static class QemuDiscovery
             var version = await ProcessRunner.RunAsync(Path.Combine(dir!, Executable(architectures[0])), ["--version"]);
             var accelerators = await ProcessRunner.RunAsync(Path.Combine(dir!, Executable(architectures[0])), ["-accel", "help"]);
             var devices = await ProcessRunner.RunAsync(Path.Combine(dir!, Executable(architectures[0])), ["-device", "help"]);
-            return new(Path.GetFullPath(dir!), version.Split('\n')[0].Trim(), architectures, accelerators.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), devices.Contains("\"virtio-vga-gl\"", StringComparison.Ordinal));
+            // Windows QEMU builds list virtio-vga-gl, but egl-headless cannot back virgl there:
+            // resource creation fails and the guest shows "Display output is not active".
+            bool virgl = !OperatingSystem.IsWindows() && devices.Contains("\"virtio-vga-gl\"", StringComparison.Ordinal);
+            return new(Path.GetFullPath(dir!), version.Split('\n')[0].Trim(), architectures, accelerators.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), virgl);
         }
         return null;
     }

@@ -170,7 +170,7 @@ Actual WinUI rendering with synthetic library entries used for layout review:
 ## Current limitations
 
 - Import, clone, snapshots, permanent deletion, hotplug and disk resizing are not implemented. The backend contract exposes working operations only.
-- QEMU UEFI/TPM, ARM64/RISC-V profiles, guest tools, sharing, clipboard, audio, USB passthrough are unavailable. Experimental Linux OpenGL graphics uses virtio-vga-gl with EGL and the embedded RFB display; guest 3D performance is not yet validated. QEMU Windows guest 3D is not implemented. Hyper-V GPU-P setup is not included in release builds (see below). Hyper-V provides UEFI/TPM and uses VMConnect for guest integration.
+- QEMU UEFI/TPM, ARM64/RISC-V profiles, guest tools, sharing, clipboard, audio, USB passthrough are unavailable. Guest 3D (VirGL) is unavailable on Windows hosts (see below). QEMU Windows guest 3D is not implemented. Hyper-V GPU-P setup is not included in release builds (see below). Hyper-V provides UEFI/TPM and uses VMConnect for guest integration.
 - Display uses uncompressed RFB and basic US keyboard mapping. Windows-reserved shortcuts stay with the host; no exclusive keyboard hook.
 - QMP/VNC bind to loopback without authentication. Multi-user deployment needs authenticated endpoints or named pipes and stronger endpoint ownership.
 - No external VM adoption. QEMU guests cannot survive application exit. Native Hyper-V guests are managed by Windows and do survive it.
@@ -191,9 +191,17 @@ Aviary is licensed GPL-3.0-or-later; see [LICENSE](LICENSE). Release packages bu
 
 ## Graphics, network and fullscreen
 
-With a QEMU machine stopped, open Edit configuration. VirtIO network selects the paravirtualized adapter while preserving shared NAT. Modern Linux includes its driver; install NetKVM in Windows before switching. Existing machines retain their previous adapter. New Linux machines default to VirtIO networking.
+With a QEMU machine stopped, open Edit configuration. VirtIO network selects the paravirtualized adapter while preserving shared NAT. Modern Linux includes its driver. Windows needs NetKVM from the virtio-win driver CD (below). Existing machines retain their previous adapter. New Linux machines default to VirtIO networking.
 
-Experimental 3D graphics is opt-in for Linux and requires adaptive display, guest Mesa/virtio support and a working host OpenGL driver. It uses `virtio-vga-gl` and `egl-headless`; there is no silent fallback to software. If startup or guest rendering fails, stop the machine and turn 3D off. Startup and framebuffer tests do not prove guest 3D acceleration or performance. Hyper-V continues using its synthetic network adapter and VMConnect; GPU sharing is not configured by release builds.
+### VirtIO drivers for Windows guests on QEMU
+
+New Windows machines on QEMU attach the virtio-win driver CD by default (toggle on the Network step). Aviary downloads virtio-win 0.1.302 once (877 MB, SHA-256 pinned in `VirtioDrivers.cs`) into `Drivers` in its data folder and shares it between machines. With local-account setup, the answer file installs `virtio-win-gt-x64.msi` silently at first sign-in, which adds NetKVM and the other VirtIO drivers. Without it, run `virtio-win-guest-tools.exe` from the CD. Windows starts on the e1000 compatibility adapter; once the drivers are in, shut down and turn on VirtIO network in Edit configuration. Existing stopped Windows machines can attach or eject the CD from the machine menu. Hyper-V guests don't need it.
+
+The four CD/disk devices (system disk, installer, setup CD, driver CD) are pinned to explicit IDE bus/unit slots; QEMU's automatic placement fails with three or more.
+
+### 3D graphics
+
+3D (`virtio-vga-gl`) is unavailable on Windows hosts. QEMU's Windows build lists the device, but its `egl-headless` display cannot back virgl: resource creation fails (`virtio_gpu_virgl_process_cmd ... error 0x1203`) and the guest shows "Display output is not active". Aviary therefore treats virgl as unavailable on Windows, and machines saved with 3D on start with the 2D adaptive VirtIO display instead. Hyper-V continues using its synthetic network adapter and VMConnect; GPU sharing is not configured by release builds.
 
 Fullscreen hides the title bar, toolbar and status bar. Move to the top edge for exit controls, or press Ctrl+Alt+Enter to toggle fullscreen. Ctrl+Alt+G releases guest focus to the controls. Guest automatic resolution continues to follow the usable screen size when supported by its driver.
 

@@ -41,6 +41,7 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
             if (!File.Exists(configuration.DiskPath)) throw new FileNotFoundException("The virtual disk is missing.", configuration.DiskPath);
             if (configuration.IsoPath.Length > 0 && !File.Exists(configuration.IsoPath)) throw new FileNotFoundException("The installer ISO is missing. Edit this VM to remove or replace it.", configuration.IsoPath);
             if (configuration.SetupIsoPath.Length > 0 && !File.Exists(configuration.SetupIsoPath)) throw new FileNotFoundException("The setup CD is missing. Eject setup media in this machine's menu.");
+            if (configuration.DriverIsoPath.Length > 0 && !File.Exists(configuration.DriverIsoPath)) throw new FileNotFoundException("The VirtIO driver CD is missing. Eject it in this machine's menu, or attach it again to re-download.");
             if (configuration.SshEnabled) await GuestProvisioning.WriteSshConfigAsync(configuration, store.DirectoryFor(configuration.Id));
             Set(configuration.Id, VmStatus.Starting); var qmpPort = FreePort(); var vncPort = FreePort(5900); while (vncPort == qmpPort) vncPort = FreePort(5900);
             var process = new Process { StartInfo = QemuCommandBuilder.Build(configuration, qemu, host, qmpPort, vncPort) }; var qmp = new QmpClient();

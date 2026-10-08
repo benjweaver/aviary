@@ -33,6 +33,8 @@ public sealed record VmConfiguration
     [System.Text.Json.Serialization.JsonIgnore]
     public string SetupPassword { get; init; } = "";
     public string SetupIsoPath { get; init; } = "";
+    // Shared virtio-win driver CD for Windows guests on QEMU (NetKVM and friends).
+    public string DriverIsoPath { get; init; } = "";
     public bool SshEnabled { get; init; }
     public int SshPort { get; init; } = 2222;
     public string SshHost { get; init; } = "";

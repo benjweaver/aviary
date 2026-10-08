@@ -79,6 +79,29 @@ public sealed partial class MainWindow
         using var process = System.Diagnostics.Process.Start(start);
     }
 #endif
+    async Task AttachDriversAsync(VmConfiguration vm)
+    {
+        if (State(vm).Status != VmStatus.Stopped) throw new InvalidOperationException("Shut down the machine before attaching the driver CD.");
+        if (!VirtioDrivers.IsCached)
+        {
+            var bar = new ProgressBar { Minimum = 0, Maximum = 1 };
+            using var cancel = new CancellationTokenSource();
+            var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Downloading VirtIO drivers", Content = Ui.Stack(Ui.Text($"virtio-win {VirtioDrivers.Version} · {VirtioDrivers.Size / 1_000_000} MB. Downloaded once and shared by all Windows machines.", 13, true), bar), CloseButtonText = "Cancel" };
+            dialog.CloseButtonClick += (_, _) => cancel.Cancel();
+            var shown = dialog.ShowAsync();
+            try { await VirtioDrivers.EnsureAsync(new Progress<double>(fraction => bar.Value = fraction), cancel.Token); }
+            catch (OperationCanceledException) { return; }
+            finally { dialog.Hide(); await shown; }
+        }
+        await SaveMachineChangeAsync(vm, vm with { DriverIsoPath = VirtioDrivers.CachedPath });
+        await new ContentDialog { XamlRoot = root.XamlRoot, Title = "Driver CD attached", Content = Ui.Text("Start the machine, open the CD in File Explorer and run virtio-win-guest-tools.exe. Then shut down and turn on VirtIO network in Edit configuration.", 13, true), CloseButtonText = "OK" }.ShowAsync();
+    }
+    async Task EjectDriversAsync(VmConfiguration vm)
+    {
+        if (State(vm).Status != VmStatus.Stopped) throw new InvalidOperationException("Shut down the machine before ejecting the driver CD.");
+        // The ISO is shared with other machines, so it stays in the Drivers folder.
+        await SaveMachineChangeAsync(vm, vm with { DriverIsoPath = "" });
+    }
     async Task EjectSetupAsync(VmConfiguration vm)
     {
         if (State(vm).Status != VmStatus.Stopped) throw new InvalidOperationException("Shut down the machine before removing setup media.");
