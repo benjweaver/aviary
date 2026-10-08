@@ -19,12 +19,12 @@ public sealed class VirtioDriversTests
     public void DriverCdIsAttachedReadOnlyBesideInstallerAndSetup()
     {
         var vm = new VmConfiguration { OperatingSystem = "Windows", DiskPath = @"C:\VM\system.qcow2", IsoPath = @"C:\ISO\win.iso", SetupIsoPath = @"C:\VM\setup.iso", DriverIsoPath = @"C:\Drivers\virtio-win.iso" };
-        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList.ToList();
+        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), TestEndpoints.Fake).ArgumentList.ToList();
         Assert.Contains("ide-cd,drive=drivers,bus=ide.1,unit=1", args);
         var drivers = args.Single(a => a.Contains("\"node-name\":\"drivers\""));
         Assert.Contains("\"read-only\":true", drivers);
         Assert.Equal(4, args.Count(a => a.StartsWith("ide-", StringComparison.Ordinal)));
-        Assert.DoesNotContain(QemuCommandBuilder.Build(vm with { DriverIsoPath = "" }, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList, a => a.Contains("drive=drivers"));
+        Assert.DoesNotContain(QemuCommandBuilder.Build(vm with { DriverIsoPath = "" }, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), TestEndpoints.Fake).ArgumentList, a => a.Contains("drive=drivers"));
     }
 
     [Theory]

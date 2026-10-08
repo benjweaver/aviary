@@ -124,7 +124,7 @@ flowchart TD
 
 QEMU command construction stays outside view models. Processes use ArgumentList without a shell. Disk paths use JSON blockdev definitions to preserve spaces and commas. Runtime status belongs to the backend.
 
-SPICE client packaging/interoperability would broaden this milestone. The integrated display uses loopback RFB/VNC with raw rectangles, RichCursor, ExtendedDesktopSize, scaling, absolute pointer input and basic US keyboard mapping. Focus changes release tracked keys and buttons; input writes are serialized. IDisplayConnection separates endpoint ownership from the window; transport/rendering should be further generalized before adding another protocol. Branding is centralized in Aviary.Core/Models.cs.
+SPICE client packaging/interoperability would broaden this milestone. The integrated display uses RFB/VNC over a private AF_UNIX socket with raw rectangles, RichCursor, ExtendedDesktopSize, scaling, absolute pointer input and basic US keyboard mapping. Focus changes release tracked keys and buttons; input writes are serialized. IDisplayConnection separates endpoint ownership from the window; transport/rendering should be further generalized before adding another protocol. Branding is centralized in Aviary.Core/Models.cs.
 
 ## Storage and diagnostics
 
@@ -172,7 +172,7 @@ Actual WinUI rendering with synthetic library entries used for layout review:
 - Import, clone, snapshots, permanent deletion, hotplug and disk resizing are not implemented. The backend contract exposes working operations only.
 - QEMU UEFI/TPM, ARM64/RISC-V profiles, guest tools, sharing, clipboard, audio, USB passthrough are unavailable. Guest 3D (VirGL) is unavailable on Windows hosts (see below). QEMU Windows guest 3D is not implemented. Hyper-V GPU-P setup is not included in release builds (see below). Hyper-V provides UEFI/TPM and uses VMConnect for guest integration.
 - Display uses uncompressed RFB and basic US keyboard mapping. Windows-reserved shortcuts stay with the host; no exclusive keyboard hook.
-- QMP/VNC bind to loopback without authentication. Multi-user deployment needs authenticated endpoints or named pipes and stronger endpoint ownership.
+- QEMU control and display never listen on TCP. QEMU user networking maps every guest's `10.0.2.2` to the host's `127.0.0.1`, so a loopback port would let guests drive their own or other VMs. QMP uses a randomly named Windows named pipe that Aviary only accepts from a server running as the same user, and the display uses an AF_UNIX socket in `%USERPROFILE%\.aviary\run`, which is restricted to your account. Neither has a password, so other processes running as you can still reach them. The guest SSH broker deliberately listens on loopback for guests to dial in; it serves only one-time setup tokens and pairs SSH sessions whose host keys Aviary pins.
 - No external VM adoption. QEMU guests cannot survive application exit. Native Hyper-V guests are managed by Windows and do survive it.
 - Port allocation has a small bind race; failures become startup errors. Log rotation and disk-space preflight remain work.
 - Appearance follows Windows. Updates and arbitrary advanced QEMU arguments are unavailable.
@@ -217,7 +217,25 @@ The Linux VirGL option is not offered as Windows 3D acceleration. The standard V
 
 New Windows machines default to local-account setup. Enter a local username and password; Aviary attaches a setup ISO with an autounattend.xml answer file. It hides Microsoft account OOBE and creates the requested local administrator without automating partitioning or activation. This is fresh-install provisioning, not a change to existing guest accounts. The password is not saved in config.json, but is present on the protected setup ISO. After installation, shut down and choose **Eject and remove setup CD**. Guest Windows setup itself may cache setup data.
 
-SSH preparation is opt-in at creation or through **SSH access** on a stopped machine. It generates a per-machine Ed25519 key and puts only its public key on the setup ISO. Run the included guest script once as administrator/root. It installs OpenSSH and a standard `aviary-agent` account with public-key-only login. QEMU forwarding binds to host loopback; Hyper-V uses the guest IP (enter it in the dialog). The copied connection command works in PowerShell for terminals and coding agents. Verify the guest fingerprint on first connection. A prepared profile is not proof of a working guest service. Disabling a Hyper-V profile does not revoke its guest key.
+### SSH access
+
+Turn on **SSH access** in a machine's menu (or at creation), start the guest, sign in, and choose **Set up in guest**. Aviary shows a one-line command and can type it into the focused guest window for you. When the guest reports back, Aviary connects once to confirm, and `ssh -F "<machine>\access\ssh_config" guest` works from any terminal or coding agent.
+
+- **Linux on QEMU:** run the command in a terminal as your normal user; no sudo. It needs OpenSSH server installed (`openssh-server` or `openssh`), bash, and curl or wget. The guest dials *out* to Aviary at `10.0.2.2` (the host's loopback in QEMU user networking) and keeps an idle connection; each SSH session is handed to `sshd -i` running as that user. Guest firewalls (ufw, firewalld) need no changes. A systemd user service keeps it running, with an autostart entry where there's no systemd user session.
+- **Windows on QEMU:** run it in PowerShell opened as administrator. It installs OpenSSH Server, authorizes this PC's key for that administrator, makes PowerShell the SSH shell, and allows port 22 only from the host. Aviary forwards `127.0.0.1:<port>` to it.
+- **Windows on Hyper-V:** the same script is copied into the guest over VMBus (Aviary turns on the Guest Service Interface) and reports back through Hyper-V's data-exchange service. Aviary connects to the guest's IP on its switch, which must be one the host is on (Default Switch or an internal switch).
+
+Aviary generates each guest's SSH host key and pins it, so there's no first-connection fingerprint prompt and an impostor fails. Keys live in the machine's `access` folder. To revoke, delete `~/.aviary-ssh` and the `aviary-ssh` service in Linux guests, or the `Aviary-SSH` firewall rule and the key in `administrators_authorized_keys` in Windows guests.
+
+## MCP server for AI tools
+
+`aviary-mcp.exe` ships beside `Aviary.App.exe`. It is a stdio [MCP](https://modelcontextprotocol.io) server that lets Claude Code, Codex and other MCP clients use your machines: `list_machines`, `start_machine`, `stop_machine`, `screenshot` (returned as an image), `type_text`, `press_keys`, `setup_ssh`, `run_command`, `put_file` and `get_file`. It forwards each call to the running Aviary app over a named pipe that only your Windows account can open, and starts Aviary if it isn't running.
+
+```powershell
+claude mcp add aviary -- "$env:LOCALAPPDATA\Programs\Aviary\aviary-mcp.exe"
+```
+
+Typing and screenshots work without any guest setup; shell commands and file copies need SSH access (`setup_ssh` can do it, including typing the command when a terminal is focused). Keyboard input assumes a US layout in the guest.
 
 ### Experimental Hyper-V GPU sharing
 

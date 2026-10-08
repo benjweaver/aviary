@@ -16,39 +16,76 @@ public sealed partial class MainWindow
     }
     async Task SshAccessAsync(VmConfiguration vm)
     {
+        var backend = model.Backend ?? throw new InvalidOperationException("Configure an engine in Settings first.");
         string directory = model.Store.DirectoryFor(vm.Id);
-        var enabled = new ToggleSwitch { Header = vm.Engine == VmEngine.HyperV ? "Show SSH connection in Aviary" : "Local SSH forwarding", IsOn = vm.SshEnabled, OnContent = "Key-based guest connection", OffContent = vm.Engine == VmEngine.HyperV ? "Connection hidden" : "Forwarding off" };
-        var host = new TextBox { Header = "Guest IP address (Hyper-V)", Text = vm.SshHost, PlaceholderText = "Shown by ipconfig inside Windows", Visibility = vm.Engine == VmEngine.HyperV ? Visibility.Visible : Visibility.Collapsed };
-        var command = new TextBox { Header = "Connection command for Codex, Claude or your terminal", Text = vm.SshEnabled && (vm.Engine == VmEngine.Qemu || vm.SshHost.Length > 0) ? GuestProvisioning.SshCommand(directory) : "Prepare access and configure the guest first.", IsReadOnly = true, TextWrapping = TextWrapping.Wrap };
-        var copy = Ui.Action("Copy connection command", "\uE8C8", () => { var data = new DataPackage(); data.SetText(GuestProvisioning.SshCommand(directory)); Clipboard.SetContent(data); return Task.CompletedTask; });
-        copy.IsEnabled = vm.SshEnabled && (vm.Engine == VmEngine.Qemu || vm.SshHost.Length > 0);
-        var error = new InfoBar { IsOpen = false, Severity = InfoBarSeverity.Error, IsClosable = false };
-        var panel = Ui.Stack(enabled, host,
-            Ui.Text("Preparation creates a private key and attaches an Aviary setup CD. Inside the installed guest, run setup-ssh.sh with sudo on Linux, or setup-ssh.ps1 in elevated Windows PowerShell. The script installs OpenSSH and creates aviary-agent as a standard user. Guest installation and first connection have to succeed before access is ready.", 13, true),
-            Ui.Text(vm.Engine == VmEngine.Qemu ? $"The host port is 127.0.0.1:{vm.SshPort}; it is not exposed to your LAN. A restart is required to apply changes." : "Use Hyper-V Default Switch for private networking. Enter the guest's IP here; Aviary does not create host forwarding or firewall rules. Hiding this connection does not revoke the guest key; remove its authorized_keys file inside the guest to revoke access.", 12, true),
-            command, copy, Ui.Text("Verify the guest host-key fingerprint on your first SSH connection. Access instructions and keys are stored in: " + GuestProvisioning.AccessDirectory(directory), 12, true), error);
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Guest SSH access", Content = new ScrollViewer { Content = panel, MaxHeight = 480 }, PrimaryButtonText = "Save / prepare", CloseButtonText = "Close" };
-        dialog.PrimaryButtonClick += async (_, e) =>
+        var current = vm;
+        var enabled = new ToggleSwitch { Header = "SSH access", IsOn = vm.SshEnabled, OnContent = "On", OffContent = "Off" };
+        var status = Ui.Text("", 13, true);
+        var instruction = Ui.Text(GuestSsh.SetupInstruction(vm), 13, true);
+        var setupCommand = new TextBox { Header = "Setup command (run once in the guest)", IsReadOnly = true, TextWrapping = TextWrapping.Wrap, FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas") };
+        var connect = new TextBox { Header = "Connect from Claude, Codex or your terminal", IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Text = GuestProvisioning.SshCommand(directory), FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas") };
+        var error = new InfoBar { IsOpen = false, Severity = InfoBarSeverity.Error, IsClosable = true };
+        static void Copy(string text) { var data = new DataPackage(); data.SetText(text); Clipboard.SetContent(data); }
+        Button? setupButton = null, typeButton = null, copySetup = null;
+        void Refresh()
         {
-            var deferral = e.GetDeferral();
-            try
-            {
-                if (State(vm).Status != VmStatus.Stopped) throw new InvalidOperationException("Shut down the machine before changing SSH access.");
-                if (enabled.IsOn && !vm.NetworkEnabled) throw new InvalidOperationException("This machine needs networking enabled before using SSH.");
-                var updated = vm with { SshEnabled = enabled.IsOn, SshHost = host.Text.Trim(), SshPort = !vm.SshEnabled && enabled.IsOn && vm.Engine == VmEngine.Qemu ? GuestProvisioning.AvailablePort() : vm.SshPort };
-                updated.Validate();
-                if (enabled.IsOn && !vm.SshEnabled)
-                {
-                    if (vm.SetupIsoPath.Length > 0) throw new InvalidOperationException("Finish Windows setup and eject the existing setup CD before preparing another one.");
-                    updated = await GuestProvisioning.PrepareAsync(updated with { LocalWindowsAccount = false }, directory);
-                }
-                if (enabled.IsOn) await GuestProvisioning.WriteSshConfigAsync(updated, directory);
-                await SaveMachineChangeAsync(vm, updated);
-            }
-            catch (Exception ex) { e.Cancel = true; error.Message = ex.Message; error.IsOpen = true; }
-            finally { deferral.Complete(); }
-        };
-        await dialog.ShowAsync();
+            bool running = State(current).Status == VmStatus.Running;
+            status.Text = !current.SshEnabled ? "Off. Turn on to let tools connect to this machine over SSH."
+                : current.SshUser.Length > 0 ? $"Set up for {current.SshUser}. Run setup again after reinstalling the guest."
+                : running ? "On. Run setup in the guest to finish." : "On. Start the machine, sign in, then run setup.";
+            setupButton!.IsEnabled = current.SshEnabled && running;
+            connect.Visibility = current.SshEnabled && current.SshUser.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            instruction.Visibility = setupCommand.Visibility = typeButton!.Visibility = copySetup!.Visibility = setupCommand.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        async Task Save(VmConfiguration updated) { updated.Validate(); await model.Store.SaveAsync(updated); model.Machines[model.Machines.IndexOf(current)] = updated; current = updated; }
+        async Task Guarded(Func<Task> action) { try { error.IsOpen = false; await action(); } catch (Exception ex) { error.Message = ex.Message; error.IsOpen = true; } Refresh(); }
+
+        enabled.Toggled += async (_, _) => await Guarded(async () =>
+        {
+            if (enabled.IsOn == current.SshEnabled) return;
+            if (!enabled.IsOn) { await Save(current with { SshEnabled = false }); setupCommand.Text = ""; return; }
+            if (!current.NetworkEnabled) { enabled.IsOn = false; throw new InvalidOperationException("Turn on networking for this machine first."); }
+            int sshPort = current.Engine == VmEngine.Qemu ? GuestProvisioning.AvailablePort() : 22, agentPort = 0;
+            if (current.Engine == VmEngine.Qemu) do agentPort = GuestProvisioning.AvailablePort(); while (agentPort == sshPort);
+            var updated = current with { SshEnabled = true, SshPort = sshPort, SshAgentPort = agentPort };
+            await GuestSsh.EnsureKeysAsync(updated, directory);
+            await Save(updated);
+            backend.EnableSsh(updated);
+            if (State(updated).Status == VmStatus.Running && updated.Engine == VmEngine.Qemu && !updated.UsesSshAgent)
+                status.Text = "Restart the machine to open its SSH port, then run setup.";
+        });
+        setupButton = Ui.Action("Set up in guest", "\uE756", () => Guarded(async () =>
+        {
+            var setup = await backend.BeginSshSetupAsync(current);
+            setupCommand.Text = setup.Command; Refresh();
+            status.Text = "Waiting for the guest to run the setup command…";
+            var user = await setup.User;
+            var updated = current with { SshUser = user };
+            await Save(updated);
+            var (host, port) = await backend.SshEndpointAsync(updated);
+            await GuestSsh.WriteConfigAsync(updated, directory, host, port);
+            var who = (await GuestSsh.RunAsync(directory, updated.OperatingSystem == "Windows" ? "$env:USERNAME" : "id -un")).Trim();
+            setupCommand.Text = "";
+            Refresh(); status.Text = $"Ready. Connected as {who}.";
+        }));
+        typeButton = Ui.Action("Type it into the guest", "\uE765", () => Guarded(async () =>
+        {
+            await backend.TypeTextAsync(current.Id, setupCommand.Text);
+            await backend.PressKeysAsync(current.Id, "enter");
+        }));
+        copySetup = Ui.Action("Copy", "\uE8C8", () => { Copy(setupCommand.Text); return Task.CompletedTask; });
+        var copyConnect = Ui.Action("Copy connection command", "\uE8C8", () => { Copy(connect.Text); return Task.CompletedTask; });
+        Refresh();
+
+        var panel = Ui.Stack(enabled, status, setupButton, instruction, setupCommand, typeButton, copySetup, connect, copyConnect,
+            Ui.Text(vm.UsesSshAgent
+                ? "Linux guests connect out to Aviary, so guest firewalls need no changes and no sudo is used. Sessions run as the user who ran setup. Only this PC can connect, and the guest's host key is pinned by Aviary."
+                : vm.Engine == VmEngine.HyperV
+                    ? "Windows guests on Hyper-V get OpenSSH Server, reachable only from this PC. Aviary connects to the guest's address on its virtual switch and pins its host key."
+                    : "Windows guests get OpenSSH Server, reachable only through 127.0.0.1 on this PC. The guest's host key is pinned by Aviary.", 12, true),
+            Ui.Text("Keys and connection settings: " + GuestProvisioning.AccessDirectory(directory), 12, true), error);
+        await new ContentDialog { XamlRoot = root.XamlRoot, Title = "SSH access · " + vm.Name, Content = new ScrollViewer { Content = panel, MaxHeight = 560 }, CloseButtonText = "Close" }.ShowAsync();
+        ShowDetails(current);
     }
 #if AVIARY_GPU_PARTITION
     // Experimental Hyper-V GPU-P; excluded from release builds until validated in a real guest.

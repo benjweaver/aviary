@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Net;
+using System.IO.Pipes;
 using System.Net.Sockets;
 using System.Text.Json;
 using Aviary.Core;
@@ -10,10 +10,17 @@ namespace Aviary.Qemu;
 
 public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabilities host) : IVirtualMachineBackend, IAsyncDisposable
 {
-    sealed class Session(Process process, QmpClient qmp, int displayPort, ProcessLifetime lifetime) : IDisplayConnection
+    sealed class Session(Process process, QmpClient qmp, QemuEndpoints endpoints, ProcessLifetime lifetime) : IDisplayConnection
     {
-        public ProcessLifetime Lifetime { get; } = lifetime; public Process Process { get; } = process; public QmpClient Qmp { get; } = qmp; public int Port { get; } = displayPort;
-        public string LastError = ""; public bool Forced; public volatile bool Exited; public int Id { get; } = process.Id; public DateTimeOffset StartedAt { get; } = new(process.StartTime); public Task? Monitor;
+        public ProcessLifetime Lifetime { get; } = lifetime; public Process Process { get; } = process; public QmpClient Qmp { get; } = qmp; public QemuEndpoints Endpoints { get; } = endpoints;
+        public async Task<Stream> OpenAsync(CancellationToken token)
+        {
+            var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            // Windows AF_UNIX doesn't support the overlapped ConnectEx behind ConnectAsync (WSAEINVAL); reads and writes are fine.
+            try { await Task.Run(() => socket.Connect(new UnixDomainSocketEndPoint(Endpoints.VncSocket)), token); return new NetworkStream(socket, ownsSocket: true); }
+            catch { socket.Dispose(); throw; }
+        }
+        public string LastError = ""; public bool Forced; public GuestSshBroker? Broker; public volatile bool Exited; public int Id { get; } = process.Id; public DateTimeOffset StartedAt { get; } = new(process.StartTime); public Task? Monitor;
     }
     readonly ConcurrentDictionary<Guid, Session> sessions = new(); readonly ConcurrentBag<Process> completed = []; readonly ConcurrentDictionary<Guid, VmState> states = new(); readonly ConcurrentDictionary<Guid, SemaphoreSlim> gates = new();
     public event Action<VmState>? StateChanged;
@@ -30,7 +37,24 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
         await ProcessRunner.RunAsync(Path.Combine(qemu.Directory, "qemu-img.exe"), ["create", "-f", configuration.DiskFormat == DiskFormat.Qcow2 ? "qcow2" : "raw", path, $"{configuration.DiskGB}G"], token);
         var vm = await GuestProvisioning.PrepareAsync(configuration with { DiskPath = path }, dir, token); await store.SaveAsync(vm, token); return vm;
     }
-    static int FreePort(int minimum = 1024) { for (int i = 0; i < 100; i++) { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); if (port >= minimum) return port; } throw new IOException("No local port is available."); }
+    // The display socket's folder must be private: Windows AF_UNIX connections are checked against the file's access.
+    static async Task PrepareRunDirectoryAsync(CancellationToken token)
+    {
+        Directory.CreateDirectory(QemuEndpoints.RunDirectory);
+        if (OperatingSystem.IsWindows()) await GuestProvisioning.ProtectDirectoryAsync(QemuEndpoints.RunDirectory, token);
+    }
+    // QEMU serves the QMP pipe once it has parsed its options; the client waits for it and checks it's served by this user.
+    static async Task<NamedPipeClientStream> ConnectQmpAsync(Process process, Session session, string pipe, CancellationToken token)
+    {
+        while (true)
+        {
+            if (process.HasExited) throw new IOException(session.LastError.Length > 0 ? session.LastError : "QEMU exited before its control channel became ready.");
+            var client = new NamedPipeClientStream(".", pipe, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            try { await client.ConnectAsync(500, token); return client; }
+            catch (TimeoutException) { await client.DisposeAsync(); }
+            catch { await client.DisposeAsync(); throw; }
+        }
+    }
     public async Task StartAsync(VmConfiguration configuration, CancellationToken token = default)
     {
         if (configuration.Engine != VmEngine.Qemu) throw new InvalidDataException("This machine requires the Hyper-V backend.");
@@ -42,21 +66,21 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
             if (configuration.IsoPath.Length > 0 && !File.Exists(configuration.IsoPath)) throw new FileNotFoundException("The installer ISO is missing. Edit this VM to remove or replace it.", configuration.IsoPath);
             if (configuration.SetupIsoPath.Length > 0 && !File.Exists(configuration.SetupIsoPath)) throw new FileNotFoundException("The setup CD is missing. Eject setup media in this machine's menu.");
             if (configuration.DriverIsoPath.Length > 0 && !File.Exists(configuration.DriverIsoPath)) throw new FileNotFoundException("The VirtIO driver CD is missing. Eject it in this machine's menu, or attach it again to re-download.");
-            if (configuration.SshEnabled) await GuestProvisioning.WriteSshConfigAsync(configuration, store.DirectoryFor(configuration.Id));
-            Set(configuration.Id, VmStatus.Starting); var qmpPort = FreePort(); var vncPort = FreePort(5900); while (vncPort == qmpPort) vncPort = FreePort(5900);
-            var process = new Process { StartInfo = QemuCommandBuilder.Build(configuration, qemu, host, qmpPort, vncPort) }; var qmp = new QmpClient();
+            if (configuration.SshEnabled) await GuestSsh.WriteConfigAsync(configuration, store.DirectoryFor(configuration.Id), "127.0.0.1", configuration.SshPort);
+            Set(configuration.Id, VmStatus.Starting);
+            await PrepareRunDirectoryAsync(token); var endpoints = QemuEndpoints.Create();
+            var process = new Process { StartInfo = QemuCommandBuilder.Build(configuration, qemu, host, endpoints) }; var qmp = new QmpClient();
             if (!process.Start()) throw new IOException("QEMU could not start.");
             ProcessLifetime ownership; try { ownership = new ProcessLifetime(process); } catch { if (!process.HasExited) process.Kill(true); process.Dispose(); await qmp.DisposeAsync(); throw; }
-            var session = new Session(process, qmp, vncPort, ownership); sessions[configuration.Id] = session;
+            var session = new Session(process, qmp, endpoints, ownership); sessions[configuration.Id] = session;
             var stdout = CaptureAsync(configuration.Id, process.StandardOutput, "stdout", session); var stderr = CaptureAsync(configuration.Id, process.StandardError, "stderr", session);
             session.Monitor = MonitorAsync(configuration.Id, session, stdout, stderr);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(15));
             try
             {
-                // Each failed TCP connection uses a fresh socket inside the probe; the QMP client connects only when ready.
-                while (true) { if (process.HasExited) throw new IOException(session.LastError.Length > 0 ? session.LastError : "QEMU exited before its control channel became ready."); using var probe = new TcpClient(); using var attempt = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token); attempt.CancelAfter(500); try { await probe.ConnectAsync(IPAddress.Loopback, qmpPort, attempt.Token); break; } catch (Exception ex) when ((ex is SocketException or OperationCanceledException) && !timeout.IsCancellationRequested) { await Task.Delay(100, timeout.Token); } }
                 qmp.EventReceived += (name, _) => { if (!process.HasExited) { if (name == "STOP") Set(configuration.Id, VmStatus.Paused, session: session); if (name == "RESUME") Set(configuration.Id, VmStatus.Running, session: session); } };
-                await qmp.ConnectAsync(qmpPort, timeout.Token); await qmp.ExecuteAsync("query-status", token: timeout.Token); Set(configuration.Id, VmStatus.Running, session: session);
+                await qmp.ConnectAsync(await ConnectQmpAsync(process, session, endpoints.QmpPipe, timeout.Token), timeout.Token); await qmp.ExecuteAsync("query-status", token: timeout.Token); Set(configuration.Id, VmStatus.Running, session: session);
+                StartSshBroker(configuration, session);
             }
             catch { session.Forced = true; if (!process.HasExited) process.Kill(true); await session.Monitor; throw; }
         }
@@ -73,8 +97,63 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
     {
         try { await session.Process.WaitForExitAsync(); await Task.WhenAll(stdout, stderr); var code = session.Process.ExitCode; Set(id, code == 0 || session.Forced ? VmStatus.Stopped : VmStatus.Error, code == 0 || session.Forced ? null : $"QEMU exited with code {code}: {session.LastError}"); }
         catch (Exception ex) { Set(id, VmStatus.Error, ex.Message); }
-        finally { session.Exited = true; sessions.TryRemove(id, out _); await session.Qmp.DisposeAsync(); session.Lifetime.Dispose(); completed.Add(session.Process); }
+        finally { session.Exited = true; sessions.TryRemove(id, out _); if (session.Broker is not null) await session.Broker.DisposeAsync(); await session.Qmp.DisposeAsync(); session.Lifetime.Dispose(); completed.Add(session.Process); try { File.Delete(session.Endpoints.VncSocket); } catch (IOException) { } }
     }
+    // Linux guests dial out to the broker for every SSH session; Windows guests only fetch setup from it
+    // (their sshd is reached through the -nic hostfwd). A busy port leaves SSH unavailable, not the VM.
+    void StartSshBroker(VmConfiguration vm, Session session)
+    {
+        if (!vm.SshEnabled || vm.SshAgentPort == 0 || session.Broker is not null) return;
+        try { session.Broker = new GuestSshBroker(vm.SshAgentPort, vm.UsesSshAgent ? vm.SshPort : 0); }
+        catch (SocketException ex) { session.LastError = $"SSH unavailable: port {vm.SshAgentPort} or {vm.SshPort} is in use ({ex.SocketErrorCode})."; }
+    }
+    // Turning SSH on while the machine runs: Linux works immediately; Windows needs a restart for its port forward.
+    public void EnableSsh(VmConfiguration vm) { if (sessions.TryGetValue(vm.Id, out var session)) StartSshBroker(vm, session); }
+
+    public async Task<GuestSsh.Setup> BeginSshSetupAsync(VmConfiguration vm, CancellationToken token = default)
+    {
+        var session = Require(vm.Id);
+        if (!vm.SshEnabled) throw new InvalidOperationException("Turn on SSH access first.");
+        var broker = session.Broker ?? throw new InvalidOperationException(session.LastError.StartsWith("SSH unavailable", StringComparison.Ordinal) ? session.LastError : "Restart the machine to finish turning on SSH access.");
+        var keys = await GuestSsh.EnsureKeysAsync(vm, store.DirectoryFor(vm.Id), token);
+        var user = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Failed(string code) => user.TrySetException(new InvalidOperationException(code switch
+        {
+            "no-sshd" => "OpenSSH server isn't installed in the guest. Install it (openssh-server or openssh) and try again.",
+            "not-admin" => "Run the command in PowerShell opened as administrator.",
+            "no-service" => "The guest couldn't start its SSH service. Check `systemctl --user status aviary-ssh` in the guest.",
+            _ => $"Guest setup failed ({code}). See the guest terminal for details.",
+        }));
+        string setupToken = broker.OfferSetup(t => vm.UsesSshAgent
+            ? GuestSsh.LinuxSetupScript(broker.AgentPort, t, keys)
+            : GuestSsh.WindowsSetupScript(keys, "10.0.2.2", broker.ReportUrl(t)), name => user.TrySetResult(name), Failed);
+        // sh -c so the same line works from bash, zsh and fish; wget covers minimal installs without curl.
+        string url = broker.SetupUrl(setupToken);
+        string command = vm.UsesSshAgent ? $"sh -c 'curl -fsS {url} || wget -qO- {url}' | sh" : $"irm {url} | iex";
+        return new(command, user.Task);
+    }
+
+    // Keyboard and screen access for automation (Aviary's MCP tools and SSH setup).
+    public async Task SendChordAsync(Guid id, string[] qcodes, CancellationToken token = default)
+    {
+        var session = Require(id);
+        // send-key holds keys for hold-time ms; pressing the next chord sooner leaves modifiers stuck.
+        await session.Qmp.ExecuteAsync("send-key", new Dictionary<string, object> { ["keys"] = qcodes.Select(k => new { type = "qcode", data = k }).ToArray(), ["hold-time"] = 20 }, token);
+        await Task.Delay(45, token);
+    }
+    public async Task TypeTextAsync(Guid id, string text, CancellationToken token = default)
+    {
+        var chords = QemuKeyboard.Text(text).ToList(); // validate everything before typing anything
+        foreach (var chord in chords) await SendChordAsync(id, chord, token);
+    }
+    public async Task<byte[]> ScreenshotAsync(Guid id, CancellationToken token = default)
+    {
+        var session = Require(id);
+        var path = Path.Combine(Path.GetTempPath(), "aviary-screen-" + Guid.NewGuid().ToString("N") + ".png");
+        try { await session.Qmp.ExecuteAsync("screendump", new { filename = path, format = "png" }, token); return await File.ReadAllBytesAsync(path, token); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     Session Require(Guid id) => sessions.TryGetValue(id, out var value) ? value : throw new InvalidOperationException("VM is not running.");
     public async Task StopAsync(Guid id, CancellationToken token = default) { var session = Require(id); await session.Qmp.ExecuteAsync("system_powerdown", token: token); Set(id, VmStatus.Stopping, session: session); }
     public async Task ForceStopAsync(Guid id, CancellationToken token = default) { var session = Require(id); session.Forced = true; if (!session.Process.HasExited) session.Process.Kill(true); if (session.Monitor is not null) await session.Monitor.WaitAsync(token); }

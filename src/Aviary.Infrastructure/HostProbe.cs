@@ -58,6 +58,29 @@ public static class ProcessRunner
         var stderr = await error; var stdout = await output;
         if (process.ExitCode != 0) throw new IOException($"{Path.GetFileName(executable)}: {stderr.Trim()} (exit {process.ExitCode})"); return stdout;
     }
+
+    public sealed record Result(int ExitCode, string Output, string Error, bool TimedOut);
+    // Never throws for a non-zero exit; output is capped so a runaway command can't exhaust memory.
+    public static async Task<Result> RunCapturedAsync(string executable, IEnumerable<string> arguments, TimeSpan limit, CancellationToken token = default, int maxChars = 1_000_000)
+    {
+        var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8 };
+        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        using var process = Process.Start(info) ?? throw new IOException("Could not start " + executable);
+        process.StandardInput.Close();
+        static async Task<string> Read(StreamReader reader, int max)
+        {
+            var text = new System.Text.StringBuilder(); var buffer = new char[8192]; int read;
+            while ((read = await reader.ReadAsync(buffer)) > 0) if (text.Length < max) text.Append(buffer, 0, Math.Min(read, max - text.Length));
+            return text.Length >= max ? text + "\n[output truncated]" : text.ToString();
+        }
+        var output = Read(process.StandardOutput, maxChars); var error = Read(process.StandardError, maxChars);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(limit);
+        bool timedOut = false;
+        try { await process.WaitForExitAsync(timeout.Token); }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { timedOut = true; process.Kill(true); await process.WaitForExitAsync(CancellationToken.None); }
+        catch { if (!process.HasExited) process.Kill(true); throw; }
+        return new(timedOut ? -1 : process.ExitCode, await output, await error, timedOut);
+    }
 }
 
 

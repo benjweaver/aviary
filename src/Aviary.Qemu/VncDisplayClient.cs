@@ -6,8 +6,8 @@ namespace Aviary.Qemu;
 // Deliberately small RFB 3.8 client: raw rectangles, desktop resizing, absolute pointer and key events.
 public sealed class VncDisplayClient : IAsyncDisposable
 {
-    readonly TcpClient socket = new(); readonly SemaphoreSlim sendGate = new(1); readonly CancellationTokenSource lifetime = new();
-    NetworkStream? stream; Task? loop; byte[] pixels = []; int width, height;
+    readonly SemaphoreSlim sendGate = new(1); readonly CancellationTokenSource lifetime = new();
+    Stream? stream; Task? loop; byte[] pixels = []; int width, height;
     public event Action<int, int, byte[]>? FrameReceived;
     public event Action<string>? Disconnected;
     public event Action<int, int, int, int, byte[]>? CursorChanged;
@@ -18,7 +18,7 @@ public sealed class VncDisplayClient : IAsyncDisposable
     static void Put16(byte[] b, int offset, int value) => BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(offset), checked((ushort)value));
     public async Task ConnectAsync(IDisplayConnection connection, CancellationToken token = default)
     {
-        await socket.ConnectAsync("127.0.0.1", connection.Port, token); stream = socket.GetStream();
+        stream = await connection.OpenAsync(token);
         var version = Encoding.ASCII.GetString(await ReadAsync(12, token)); if (version != "RFB 003.008\n") throw new IOException("This display requires RFB 3.8.");
         await SendAsync(Encoding.ASCII.GetBytes("RFB 003.008\n"), token);
         var count = (await ReadAsync(1, token))[0]; if (count == 0) throw new IOException("VNC rejected the connection."); var types = await ReadAsync(count, token);
@@ -97,5 +97,5 @@ public sealed class VncDisplayClient : IAsyncDisposable
     }
     public Task PointerAsync(int x, int y, byte buttons) { var b = new byte[6]; b[0] = 5; b[1] = buttons; Put16(b, 2, Math.Clamp(x, 0, width - 1)); Put16(b, 4, Math.Clamp(y, 0, height - 1)); return SendAsync(b, lifetime.Token); }
     public async Task SendCtrlAltDeleteAsync() { await KeyAsync(0xffe3, true); await KeyAsync(0xffe9, true); await KeyAsync(0xffff, true); await KeyAsync(0xffff, false); await KeyAsync(0xffe9, false); await KeyAsync(0xffe3, false); }
-    public async ValueTask DisposeAsync() { lifetime.Cancel(); socket.Dispose(); if (loop is not null) await loop; lifetime.Dispose(); sendGate.Dispose(); }
+    public async ValueTask DisposeAsync() { lifetime.Cancel(); stream?.Dispose(); if (loop is not null) await loop; lifetime.Dispose(); sendGate.Dispose(); }
 }

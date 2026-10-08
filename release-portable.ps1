@@ -19,7 +19,10 @@ $destination=Join-Path $releaseRoot 'Aviary'
 $dotnet=Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
 & $dotnet publish "$PSScriptRoot\src\Aviary.App\Aviary.App.csproj" -c Release -r win-x64 --self-contained true -o $destination -m:1 -nr:false "-p:RestoreConfigFile=$PSScriptRoot\NuGet.Config"
 if($LASTEXITCODE -ne 0){throw 'Release build failed'}
-foreach($required in 'Aviary.App.exe','Aviary.App.pri','App.xbf','coreclr.dll'){
+# aviary-mcp ships beside the app (same runtime) so MCP clients can point at it and it can launch Aviary.
+& $dotnet publish "$PSScriptRoot\src\Aviary.Mcp\Aviary.Mcp.csproj" -c Release -r win-x64 --self-contained true -o $destination -m:1 -nr:false "-p:RestoreConfigFile=$PSScriptRoot\NuGet.Config"
+if($LASTEXITCODE -ne 0){throw 'MCP server build failed'}
+foreach($required in 'Aviary.App.exe','Aviary.App.pri','App.xbf','coreclr.dll','aviary-mcp.exe'){
  if(!(Test-Path (Join-Path $destination $required))){throw "Missing release file: $required"}
 }
 New-Item -ItemType Directory -Force -Path "$destination\runtime\qemu" | Out-Null

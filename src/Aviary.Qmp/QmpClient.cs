@@ -6,14 +6,21 @@ namespace Aviary.Qmp;
 
 public sealed class QmpClient : IAsyncDisposable
 {
-    readonly TcpClient client = new(); readonly CancellationTokenSource lifetime = new(); readonly SemaphoreSlim writerLock = new(1);
+    Stream? connection; readonly CancellationTokenSource lifetime = new(); readonly SemaphoreSlim writerLock = new(1);
     readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> pending = new();
     StreamReader? reader; StreamWriter? writer; Task? readLoop; long nextId;
     public event Action<string, JsonElement>? EventReceived;
     public static bool IsEvent(JsonElement message) => message.TryGetProperty("event", out _);
+    // TCP is only for tests' fake servers; Aviary connects QEMU over a named pipe (see ConnectAsync(Stream)).
     public async Task ConnectAsync(int port, CancellationToken token = default)
     {
-        await client.ConnectAsync("127.0.0.1", port, token); var stream = client.GetStream();
+        var tcp = new TcpClient();
+        try { await tcp.ConnectAsync("127.0.0.1", port, token); } catch { tcp.Dispose(); throw; }
+        await ConnectAsync(tcp.GetStream(), token);
+    }
+    public async Task ConnectAsync(Stream stream, CancellationToken token = default)
+    {
+        connection = stream;
         reader = new(stream, Encoding.UTF8, false, 4096, true); writer = new(stream, new UTF8Encoding(false), 4096, true) { AutoFlush = true, NewLine = "\r\n" };
         var greeting = await reader.ReadLineAsync(token) ?? throw new IOException("QMP disconnected before greeting.");
         using var document = JsonDocument.Parse(greeting); if (!document.RootElement.TryGetProperty("QMP", out _)) throw new IOException("Invalid QMP greeting.");
@@ -52,6 +59,8 @@ public sealed class QmpClient : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or JsonException or OperationCanceledException or ObjectDisposedException) { failure = ex; }
         finally { lifetime.Cancel(); foreach (var pair in pending) pair.Value.TrySetException(failure); }
     }
-    public async ValueTask DisposeAsync() { lifetime.Cancel(); client.Dispose(); if (readLoop is not null) await readLoop; reader?.Dispose(); writer?.Dispose(); lifetime.Dispose(); writerLock.Dispose(); }
+    // The reader and writer leave the stream open and the writer auto-flushes, so only the stream needs closing;
+    // disposing the writer after a pipe has closed would throw from its final flush.
+    public async ValueTask DisposeAsync() { lifetime.Cancel(); connection?.Dispose(); if (readLoop is not null) await readLoop; lifetime.Dispose(); writerLock.Dispose(); }
 }
 

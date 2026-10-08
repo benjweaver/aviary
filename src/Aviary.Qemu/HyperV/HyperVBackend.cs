@@ -80,7 +80,6 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
         if (!File.Exists(configuration.DiskPath)) throw new FileNotFoundException("The Hyper-V disk is missing. Moving native Hyper-V machines requires export/import in Hyper-V Manager.");
         if (configuration.IsoPath.Length > 0 && !File.Exists(configuration.IsoPath)) throw new FileNotFoundException("The installer ISO is missing. Clear or replace it in Edit configuration.");
         if (configuration.SetupIsoPath.Length > 0 && !File.Exists(configuration.SetupIsoPath)) throw new FileNotFoundException("The setup CD is missing. Eject setup media in this machine's menu.");
-        if (configuration.SshEnabled) await GuestProvisioning.WriteSshConfigAsync(configuration, store.DirectoryFor(configuration.Id));
         machines[configuration.Id] = configuration; var vm = Require(configuration.Id);
         await ExecuteAsync(vm.Id, HyperVScripts.Start, new { vm.Id, vm.HyperVId, vm.Name, vm.DiskPath, vm.IsoPath, vm.SetupIsoPath, ManagedSetupIsoPath = Path.Combine(GuestProvisioning.AccessDirectory(store.DirectoryFor(vm.Id)), "setup.iso") }, token);
     }
@@ -122,6 +121,67 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
             await Task.Delay(100);
         }
     }
+    async Task<(string[] Ips, string? Report)> GuestReportAsync(VmConfiguration vm, CancellationToken token)
+    {
+        using var json = JsonDocument.Parse(await commands.RunAsync(HyperVScripts.GuestReport, Identity(vm), token));
+        var ips = json.RootElement.TryGetProperty("Ips", out var list) && list.ValueKind == JsonValueKind.Array ? list.EnumerateArray().Select(i => i.GetString()!).ToArray() : [];
+        var report = json.RootElement.TryGetProperty("Report", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString() : null;
+        return (ips, report);
+    }
+
+    // The guest's IPv4 address as reported by Hyper-V's data exchange service; SSH connects to it directly.
+    public async Task<string> GuestAddressAsync(Guid id, CancellationToken token = default)
+    {
+        var (ips, _) = await GuestReportAsync(Require(id), token);
+        return ips.FirstOrDefault() ?? throw new InvalidOperationException("Hyper-V hasn't reported an IP address for this guest yet. Wait for it to finish booting; it needs a network connection and integration services.");
+    }
+
+    // Windows guests only: the script is pushed in with Copy-VMFile and reports back through KVP.
+    public async Task<GuestSsh.Setup> BeginSshSetupAsync(VmConfiguration configuration, CancellationToken token = default)
+    {
+        var vm = Require(configuration.Id);
+        if (configuration.OperatingSystem != "Windows") throw new NotSupportedException("SSH setup for Hyper-V currently supports Windows guests. Use QEMU for Linux guests.");
+        if (GetStatus(vm.Id).Status != VmStatus.Running) throw new InvalidOperationException("Start the machine and sign in first.");
+        var keys = await GuestSsh.EnsureKeysAsync(configuration, store.DirectoryFor(vm.Id), token);
+        var nonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
+        var staged = Path.Combine(GuestProvisioning.AccessDirectory(store.DirectoryFor(vm.Id)), "ssh-setup.ps1");
+        await File.WriteAllTextAsync(staged, GuestSsh.WindowsSetupScript(keys, "gateway", "kvp:" + nonce), new System.Text.UTF8Encoding(true), token);
+        try { await commands.RunAsync(HyperVScripts.CopyIntoGuest, new { vm.Id, vm.HyperVId, Source = staged, Destination = GuestSsh.WindowsSetupPath }, token); }
+        finally { File.Delete(staged); }
+        return new($"powershell -NoProfile -ExecutionPolicy Bypass -File {GuestSsh.WindowsSetupPath}", WaitForReportAsync(vm, nonce));
+    }
+
+    async Task<string> WaitForReportAsync(VmConfiguration vm, string nonce)
+    {
+        var deadline = DateTime.UtcNow.AddMinutes(15); // installing OpenSSH Server can take a while
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token);
+            var (_, report) = await GuestReportAsync(vm, lifetime.Token);
+            if (report is null || !report.StartsWith(nonce + "/", StringComparison.Ordinal)) continue;
+            var parts = report[(nonce.Length + 1)..].Split('/', 2);
+            if (parts is ["ok", var user]) return user;
+            throw new InvalidOperationException(parts.ElementAtOrDefault(1) == "not-admin" ? "Run the command in PowerShell opened as administrator." : "Guest SSH setup failed. See the guest PowerShell window for details.");
+        }
+        throw new TimeoutException("The guest didn't finish SSH setup within 15 minutes.");
+    }
+
+    public Task TypeTextAsync(Guid id, string text, CancellationToken token = default) => KeyboardAsync(id, HyperVKeyboard.Text(text).ToArray(), token);
+    public Task PressKeysAsync(Guid id, string combo, CancellationToken token = default) => KeyboardAsync(id, [HyperVKeyboard.Chord(combo)], token);
+    async Task KeyboardAsync(Guid id, HyperVKeyboard.Step[] steps, CancellationToken token)
+    {
+        var vm = Require(id);
+        await commands.RunAsync(HyperVScripts.Keyboard, new { vm.Id, vm.HyperVId, Steps = steps.Select(s => new { s.Text, s.Keys }).ToArray() }, token);
+    }
+
+    public async Task<byte[]> ScreenshotAsync(Guid id, CancellationToken token = default)
+    {
+        const int width = 1280, height = 800; // Hyper-V scales the guest display into this frame
+        var vm = Require(id);
+        var pixels = Convert.FromBase64String(await commands.RunAsync(HyperVScripts.Thumbnail, new { vm.Id, vm.HyperVId, Width = width, Height = height }, token));
+        return Png.FromRgb565(pixels, width, height);
+    }
+
     public async Task RefreshAsync()
     {
         await gate.WaitAsync(lifetime.Token);

@@ -19,7 +19,7 @@ public sealed class AcceleratedDevicesTests
     public void NetworkChoiceRespectsDisconnectedMode(bool enabled, bool fast, string expected)
     {
         var vm = new VmConfiguration { DiskPath = @"C:\VM\system.qcow2", NetworkEnabled = enabled, AcceleratedNetwork = fast };
-        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList;
+        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), TestEndpoints.Fake).ArgumentList;
         Assert.Equal(expected, args[args.IndexOf("-nic") + 1]);
     }
     [Fact]
@@ -37,7 +37,7 @@ public sealed class AcceleratedDevicesTests
     public void ThreeDUsesVirglOnlyWhereItWorks(bool virgl, string device, string display)
     {
         var vm = new VmConfiguration { DiskPath = @"C:\VM\system.qcow2", DynamicDisplay = true, AcceleratedGraphics = true };
-        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64], VirglAvailable: virgl), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList;
+        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64], VirglAvailable: virgl), new("X64", 8, 16384, false, "Windows"), TestEndpoints.Fake).ArgumentList;
         Assert.Equal(display, args[args.IndexOf("-display") + 1]);
         Assert.Equal(device, args[args.IndexOf("-vga") + 3]);
     }

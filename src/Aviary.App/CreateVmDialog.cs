@@ -36,7 +36,7 @@ public sealed class CreateVmDialog : ContentDialog
     readonly ToggleSwitch localAccount = new() { Header = "Local Windows account", IsOn = true, OnContent = "Skip Microsoft-account setup", OffContent = "Use standard Windows setup" };
     readonly TextBox localUser = new() { Header = "Local username", Text = "aviary", MaxLength = 20 };
     readonly PasswordBox localPassword = new() { Header = "Local password (12+ characters)" };
-    readonly ToggleSwitch ssh = new() { Header = "SSH access for tools and assistants", OnContent = "Prepare key and guest setup CD", OffContent = "Off" };
+    readonly ToggleSwitch ssh = new() { Header = "SSH access for tools and assistants", OnContent = "On · finish setup once the guest is installed", OffContent = "Off" };
     readonly string[] labels = ["Experience", "Operating system", "Hardware", "Storage", "Network", "Integration", "Review"];
     readonly string[] titles = ["How will you use this machine?", "Choose its operating system", "Give it room to work", "A disk of its own", "Get connected", "Make it feel at home", "Ready when you are"];
     readonly string[] descriptions = ["Choose the right balance of speed and compatibility.", "Start from an installer image on your PC.", "Leave enough resources for Windows and your other apps.", "The disk is a file on your PC, separate from your own files.", "A shared connection is the simplest place to start.", "Choose the display experience for this guest.", "Aviary will create the disk and add this machine to your library."];
@@ -104,7 +104,7 @@ public sealed class CreateVmDialog : ContentDialog
                 else { body.Children.Add(fastNetwork); body.Children.Add(Ui.Text("Modern Linux includes the VirtIO driver. Uses shared NAT networking.", 12, true)); } break;
             case 5:
                 body.Children.Add(ssh);
-                body.Children.Add(Ui.Text(Native ? "Run the setup script once in the guest, then connect to its IP. Default Switch keeps networking private to the host. The SSH account is a standard user." : "Run the setup script once in the guest. Aviary forwards SSH to this PC only and creates a standard user for Codex, Claude or your terminal.", 12, true));
+                body.Children.Add(Ui.Text("Lets Claude, Codex or your terminal run commands in this machine over SSH. After installing the guest, open SSH access in its menu and run the one-line setup. Linux needs no sudo; Windows asks for an administrator PowerShell. Only this PC can connect.", 12, true));
                 if (os.SelectedIndex == 1) { body.Children.Add(localAccount); body.Children.Add(localUser); body.Children.Add(localPassword); body.Children.Add(Ui.Text("For fresh Windows installs. Choose a password for your local account. The setup CD contains it; eject and remove setup media after installation. Disk selection and activation remain part of Windows setup.", 12, true)); }
                 if (Native) { body.Children.Add(Ui.Card(Ui.Stack(Ui.Heading("Windows guest connection", 18), Ui.Text("Hyper-V opens in VMConnect. Enhanced Session can provide resizing and shared devices when supported and configured in Windows and the guest.", 14, true), Ui.Text("The embedded QEMU display and its input shortcuts do not apply to Hyper-V.", 12, true)))); break; }
                 body.Children.Add(dynamic); body.Children.Add(graphics); body.Children.Add(Ui.Text("3D needs Linux Mesa and a working host OpenGL driver. Leave off for maximum compatibility.", 12, true)); body.Children.Add(Ui.Text("Adaptive display uses VirtIO graphics. Modern Linux desktops can follow your window size when their display driver is active. Windows needs a compatible guest driver.", 13, true));
@@ -113,7 +113,7 @@ public sealed class CreateVmDialog : ContentDialog
             case 6:
                 body.Children.Add(Ui.OsIcon((string)os.SelectedItem, 64)); body.Children.Add(Ui.Heading(name.Text, 22));
                 body.Children.Add(Ui.Text($"{os.SelectedItem} · {(Native ? "Hyper-V" : virtualize.IsChecked == true ? "QEMU · WHPX" : "QEMU · software emulation")}\n{cpu.Value} CPUs · {Ui.Memory((int)ram.Value)} RAM\n{disk.Value} GB · {(Native ? "VHDX" : format.SelectedIndex == 0 ? "QCOW2" : "RAW")}\n{(network.IsOn ? Native ? nativeSwitch.SelectedItem : "Shared internet connection" : "Network disconnected")}\n{(Native ? "Windows Virtual Machine Connection" : dynamic.IsOn ? "Adaptive display" : "Compatibility display")}", 14));
-                body.Children.Add(Ui.Text((os.SelectedIndex == 1 && localAccount.IsOn ? "Local account: " + localUser.Text.Trim() + "\n" : "") + (ssh.IsOn ? "SSH setup CD and private key will be prepared." : "SSH access is off."), 12, true));
+                body.Children.Add(Ui.Text((os.SelectedIndex == 1 && localAccount.IsOn ? "Local account: " + localUser.Text.Trim() + "\n" : "") + (ssh.IsOn ? "SSH access on: finish setup from the machine menu after installing the guest." : "SSH access is off."), 12, true));
                 body.Children.Add(Ui.Text("Installer: " + Path.GetFileName(iso.Text), 12, true)); body.Children.Add(Ui.Text("Library: " + model.Store.Root, 12, true)); break;
         }
     }
@@ -151,7 +151,8 @@ public sealed class CreateVmDialog : ContentDialog
             ValidateStep();
             if (step < 6) { step++; ShowStep(); return; }
             creating = true; IsPrimaryButtonEnabled = false; IsSecondaryButtonEnabled = false; PrimaryButtonText = "Creating…"; progress.IsIndeterminate = true; error.IsOpen = false;
-            var vm = Configuration(); if (vm.SshEnabled && !Native) vm = vm with { SshPort = GuestProvisioning.AvailablePort() };
+            var vm = Configuration();
+            if (vm.SshEnabled) { int sshPort = Native ? 22 : GuestProvisioning.AvailablePort(), agentPort = 0; if (!Native) do agentPort = GuestProvisioning.AvailablePort(); while (agentPort == sshPort); vm = vm with { SshPort = sshPort, SshAgentPort = agentPort }; }
             if (!Native && os.SelectedIndex == 1 && drivers.IsOn)
             {
                 if (!VirtioDrivers.IsCached) { PrimaryButtonText = "Downloading drivers…"; progress.IsIndeterminate = false; progress.Value = 0; }

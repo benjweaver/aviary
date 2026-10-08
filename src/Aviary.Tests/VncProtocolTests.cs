@@ -10,7 +10,11 @@ namespace Aviary.Tests;
 
 public sealed class VncProtocolTests
 {
-    sealed record Endpoint(int Port) : IDisplayConnection;
+    // The fake RFB server runs in-process on TCP; Aviary itself connects to QEMU over a Unix socket.
+    sealed record Endpoint(int Port) : IDisplayConnection
+    {
+        public async Task<Stream> OpenAsync(CancellationToken token) { var tcp = new TcpClient(); await tcp.ConnectAsync(IPAddress.Loopback, Port, token); return tcp.GetStream(); }
+    }
     static async Task<byte[]> Read(NetworkStream stream, int length, CancellationToken token)
     {
         var bytes = new byte[length]; await stream.ReadExactlyAsync(bytes, token); return bytes;

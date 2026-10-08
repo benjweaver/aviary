@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices.WindowsRuntime;
 using Aviary.Core;
+using Aviary.Qemu;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -24,6 +25,7 @@ public sealed partial class MainWindow : Window
     readonly HashSet<Guid> busy = [];
     TextBox search = new() { PlaceholderText = "Find a machine", Width = 220, VerticalAlignment = VerticalAlignment.Center };
     Guid? selected;
+    ControlServer? control;
     bool runningOnly, initialized, closing, confirmingClose;
     GridView? libraryGrid;
     TextBlock? countLabel;
@@ -65,7 +67,7 @@ public sealed partial class MainWindow : Window
             try { if (await Confirm("Close Aviary?", "Running QEMU machines will be powered off. Shut down inside each guest first to preserve unsaved work. Hyper-V machines keep running in Windows.", "Power off and close")) { closing = true; foreach (var display in displays.Values.ToArray()) display.Close(); if (model.Backend is not null) await model.Backend.DisposeAsync(); Close(); } }
             finally { confirmingClose = false; }
         };
-        Closed += async (_, _) => { if (!closing && model.Backend is not null) await model.Backend.DisposeAsync(); };
+        Closed += async (_, _) => { if (control is not null) await control.DisposeAsync(); if (!closing && model.Backend is not null) await model.Backend.DisposeAsync(); };
     }
     bool ActiveMachines() => model.Machines.Any(vm => State(vm).Status is VmStatus.Running or VmStatus.Paused or VmStatus.Starting or VmStatus.Stopping);
     VmState State(VmConfiguration vm) => model.Backend?.GetStatus(vm.Id) ?? new(vm.Id, VmStatus.Stopped);
@@ -81,6 +83,9 @@ public sealed partial class MainWindow : Window
         content.Content = new ProgressRing { IsActive = true, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         await model.InitializeAsync();
         if (model.Backend is not null) model.Backend.StateChanged += state => DispatcherQueue.TryEnqueue(() => OnStateChanged(state));
+        // Serves aviary-mcp. Recreated with the library whenever settings reload it.
+        if (control is not null) await control.DisposeAsync();
+        control = model.Backend is null ? null : new ControlServer(new ControlService(new AppLibrary(model, DispatcherQueue, vm => { if (selected == vm.Id) ShowDetails(vm); })));
         hostLabel.Text = $"{model.Host.LogicalCpuCount} CPUs · {Ui.Memory((int)model.Host.MemoryMB)} RAM\n" + (model.Host.WhpxAvailable ? "Hardware acceleration ready" : "Software emulation available");
         if (model.Installation is null && !model.HyperV.Available) { notice.Title = "Connect your virtualization engine"; notice.Message = "Choose QEMU or check Hyper-V availability in Settings."; notice.Severity = InfoBarSeverity.Warning; notice.IsOpen = true; }
         else if (model.LoadErrors.Count > 0) { notice.Title = "Some machines could not be loaded"; notice.Message = string.Join("\n", model.LoadErrors); notice.Severity = InfoBarSeverity.Warning; notice.IsOpen = true; }

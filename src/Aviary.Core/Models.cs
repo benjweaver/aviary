@@ -38,6 +38,11 @@ public sealed record VmConfiguration
     public bool SshEnabled { get; init; }
     public int SshPort { get; init; } = 2222;
     public string SshHost { get; init; } = "";
+    // Linux guests on QEMU dial out to Aviary on this loopback port; the guest account is reported back by setup.
+    public int SshAgentPort { get; init; }
+    public string SshUser { get; init; } = "";
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool UsesSshAgent => Engine == VmEngine.Qemu && OperatingSystem == "Linux";
     public void Validate()
     {
         if (AcceleratedGraphics && (Engine != VmEngine.Qemu || OperatingSystem != "Linux" || !DynamicDisplay)) throw new InvalidDataException("3D graphics requires a QEMU Linux guest with adaptive display enabled.");
@@ -45,6 +50,8 @@ public sealed record VmConfiguration
         if (!System.Text.RegularExpressions.Regex.IsMatch(WindowsUserName, "^[a-zA-Z][a-zA-Z0-9_-]{0,19}$")) throw new InvalidDataException("Use a short local username containing letters, digits, underscores or hyphens.");
         if (SshEnabled && (!NetworkEnabled || SshPort < 1024 || SshPort > 65535)) throw new InvalidDataException("SSH access requires networking and a host port from 1024 to 65535.");
         if (SshHost.Length > 0 && !System.Net.IPAddress.TryParse(SshHost, out _)) throw new InvalidDataException("Enter the guest IP address for SSH.");
+        if (SshAgentPort != 0 && (SshAgentPort < 1024 || SshAgentPort > 65535 || SshAgentPort == SshPort)) throw new InvalidDataException("The SSH agent port must be a separate host port from 1024 to 65535.");
+        if (SshUser.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(SshUser, "^[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}$")) throw new InvalidDataException("The guest reported an invalid user name.");
         if (SchemaVersion != 1) throw new InvalidDataException("Unsupported configuration version.");
         if (Id == Guid.Empty || string.IsNullOrWhiteSpace(Name) || Name.Length > 100) throw new InvalidDataException("Enter a name of 1–100 characters.");
         if (!Enum.IsDefined(Architecture) || !Enum.IsDefined(Acceleration) || !Enum.IsDefined(DiskFormat) || !Enum.IsDefined(Engine)) throw new InvalidDataException("Unknown configuration value.");
@@ -68,4 +75,5 @@ public interface IVirtualMachineBackend
     VmState GetStatus(Guid id);
     event Action<VmState>? StateChanged;
 }
-public interface IDisplayConnection { int Port { get; } }
+// Opens a connection to a running guest's display (RFB). Local-only: Aviary never exposes displays on TCP.
+public interface IDisplayConnection { Task<Stream> OpenAsync(CancellationToken token); }

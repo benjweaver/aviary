@@ -110,7 +110,7 @@ public sealed partial class MainWindow
     {
         string text = "";
         if (vm.Engine == VmEngine.HyperV) text = $"Hyper-V ID: {vm.HyperVId}\n{model.HyperV.Message}\nState: {State(vm).Status}\n{State(vm).Error}\nDisk: {vm.DiskPath}\nSwitch: {vm.HyperVSwitch}";
-        else if (model.Installation is not null) try { text = QemuCommandBuilder.Preview(QemuCommandBuilder.Build(vm, model.Installation, model.Host, 4444, 5900)); } catch (Exception ex) { text = ex.Message; }
+        else if (model.Installation is not null) try { text = QemuCommandBuilder.Preview(QemuCommandBuilder.Build(vm, model.Installation, model.Host, QemuEndpoints.Create())); } catch (Exception ex) { text = ex.Message; }
         var log = Path.Combine(model.Store.DirectoryFor(vm.Id), "logs", "stderr.jsonl"); if (File.Exists(log)) text += "\n\nRecent messages\n" + string.Join("\n", File.ReadLines(log).TakeLast(40));
         await new ContentDialog { XamlRoot = root.XamlRoot, Title = "Diagnostics", Content = new ScrollViewer { MaxHeight = 450, Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, FontFamily = new FontFamily("Cascadia Mono") } }, CloseButtonText = "Done" }.ShowAsync();
     }

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>aviary-mcp</AssemblyName>
+    <RootNamespace>Aviary.Mcp</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Aviary.Core/Aviary.Core.csproj" /></ItemGroup>
+</Project>

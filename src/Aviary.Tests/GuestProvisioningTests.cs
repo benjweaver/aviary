@@ -28,8 +28,8 @@ public sealed class GuestProvisioningTests
     [Fact]
     public void ForwardIsLoopbackOnlyAndGuestPortIsFixed()
     {
-        var vm = new VmConfiguration { DiskPath = @"C:\VM\disk.qcow2", SshEnabled = true, SshPort = 22222, SetupIsoPath = @"C:\VM\setup.iso" };
-        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), 4444, 5900).ArgumentList;
+        var vm = new VmConfiguration { OperatingSystem = "Windows", DiskPath = @"C:\VM\disk.qcow2", SshEnabled = true, SshPort = 22222, SetupIsoPath = @"C:\VM\setup.iso" };
+        var args = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), TestEndpoints.Fake).ArgumentList;
         Assert.Contains("user,model=e1000,hostfwd=tcp:127.0.0.1:22222-:22", args); Assert.Contains("ide-cd,drive=setup,bus=ide.1,unit=0", args);
         Assert.Throws<InvalidDataException>(() => (vm with { NetworkEnabled = false }).Validate());
     }
@@ -40,16 +40,7 @@ public sealed class GuestProvisioningTests
         Assert.Contains("Recommended: Hyper-V", text); Assert.Contains("3D acceleration is not automatic", text);
     }
     [Fact]
-    public async Task GeneratedWindowsSshScriptParsesAndCannotInjectPublicKey()
-    {
-        var script = GuestProvisioning.SetupScript(true, "ssh-ed25519 AAAABBBB test");
-        await new HyperVCommands().RunAsync("$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseInput($p.Script,[ref]$t,[ref]$e)|Out-Null;if($e.Count){throw ($e|Out-String)}", new { Script = script });
-        Assert.Contains("AuthenticationMethods publickey", script);
-        Assert.DoesNotContain("\r", GuestProvisioning.SetupScript(false, "ssh-ed25519 AAAABBBB test"));
-        Assert.Throws<InvalidDataException>(() => GuestProvisioning.SetupScript(true, "ssh-ed25519 ABC';evil"));
-    }
-    [Fact]
-    public async Task RealWindowsMediaAndSshProfileContainPublicKeyButNeverPrivateKey()
+    public async Task SetupMediaCarriesOnlyTheAnswerFile()
     {
         if (!OperatingSystem.IsWindows()) return;
         string root = Path.Combine(Path.GetTempPath(), "aviary-provision-test-" + Guid.NewGuid()); Directory.CreateDirectory(root);
@@ -57,13 +48,9 @@ public sealed class GuestProvisioningTests
         {
             var vm = await GuestProvisioning.PrepareAsync(new() { OperatingSystem = "Windows", LocalWindowsAccount = true, SetupPassword = "Test-only-password123!", SshEnabled = true, SshPort = 22222 }, root);
             Assert.True(File.Exists(vm.SetupIsoPath)); Assert.Equal("", vm.SetupPassword);
-            var bytes = await File.ReadAllBytesAsync(vm.SetupIsoPath);
-            Assert.Contains("CD001", System.Text.Encoding.ASCII.GetString(bytes));
-            var text = System.Text.Encoding.UTF8.GetString(bytes);
-            Assert.Contains("HideOnlineAccountScreens", text); Assert.Contains("ssh-ed25519", text); Assert.DoesNotContain("OPENSSH PRIVATE KEY", text);
-            var config = await File.ReadAllTextAsync(GuestProvisioning.ConfigPath(root));
-            Assert.Contains("HostName 127.0.0.1", config); Assert.Contains("StrictHostKeyChecking ask", config); Assert.DoesNotContain("StrictHostKeyChecking no", config);
-            Assert.True(File.Exists(Path.Combine(root, "access", "id_ed25519")));
+            var text = System.Text.Encoding.UTF8.GetString(await File.ReadAllBytesAsync(vm.SetupIsoPath));
+            Assert.Contains("CD001", text); Assert.Contains("HideOnlineAccountScreens", text);
+            Assert.DoesNotContain("ssh-ed25519", text); Assert.DoesNotContain("PRIVATE KEY", text);
             Assert.Empty(Directory.GetDirectories(Path.Combine(root, "access"), "media-*"));
         }
         finally { Directory.Delete(root, true); }

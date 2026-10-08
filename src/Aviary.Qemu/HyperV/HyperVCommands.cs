@@ -118,4 +118,55 @@ public static class HyperVScripts
         })
         ConvertTo-Json -InputObject $result -Compress
         """;
+    // Guest automation. The WMI objects for this VM: Msvm_ComputerSystem is keyed by the VM's GUID.
+    const string Wmi = Require + """
+
+        $cs = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_ComputerSystem -Filter ("Name='" + $vm.Id + "'")
+        """;
+    // Pushes a host file into the guest over VMBus; needs the Guest Service Interface integration service.
+    public const string CopyIntoGuest = Require + """
+
+        $gsi = Get-VMIntegrationService -VM $vm | Where-Object { $_.Id -like '*6C09BB55-D683-4DA0-8931-C9BF705F6480' }
+        if ($gsi -and !$gsi.Enabled) { Enable-VMIntegrationService -VMIntegrationService $gsi; Start-Sleep -Seconds 3 }
+        Copy-VMFile -VM $vm -SourcePath $p.Source -DestinationPath $p.Destination -CreateFullPath -FileSource Host -Force
+        """;
+    // IPv4 addresses (via the data exchange integration service) and the latest AviarySsh report from the guest.
+    public const string GuestReport = Wmi + """
+
+        $ips = @((Get-VMNetworkAdapter -VM $vm).IPAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notlike '169.254.*' })
+        $report = $null
+        $kvp = Get-CimAssociatedInstance -InputObject $cs -ResultClassName Msvm_KvpExchangeComponent
+        foreach ($item in @($kvp.GuestExchangeItems)) {
+            if (!$item) { continue }
+            $x = [xml]$item
+            $name = ($x.INSTANCE.PROPERTY | Where-Object { $_.NAME -eq 'Name' }).VALUE
+            if ($name -eq 'AviarySsh') { $report = ($x.INSTANCE.PROPERTY | Where-Object { $_.NAME -eq 'Data' }).VALUE }
+        }
+        [pscustomobject]@{ Ips = $ips; Report = $report } | ConvertTo-Json -Compress
+        """;
+    // Text uses TypeText (ASCII); each chord is a list of Windows virtual-key codes pressed together.
+    public const string Keyboard = Wmi + """
+
+        $kb = Get-CimAssociatedInstance -InputObject $cs -ResultClassName Msvm_Keyboard
+        function Check($r) { if ($r.ReturnValue -ne 0) { throw ('Hyper-V keyboard returned ' + $r.ReturnValue) } }
+        foreach ($step in @($p.Steps)) {
+            if ($step.Text) { Check (Invoke-CimMethod -InputObject $kb -MethodName TypeText -Arguments @{ asciiText = [string]$step.Text }) }
+            else {
+                $keys = @($step.Keys)
+                foreach ($k in $keys) { Check (Invoke-CimMethod -InputObject $kb -MethodName PressKey -Arguments @{ keyCode = [uint32]$k }) }
+                [array]::Reverse($keys)
+                foreach ($k in $keys) { Check (Invoke-CimMethod -InputObject $kb -MethodName ReleaseKey -Arguments @{ keyCode = [uint32]$k }) }
+            }
+            Start-Sleep -Milliseconds 30
+        }
+        """;
+    // Raw RGB565 frame of the guest display, base64.
+    public const string Thumbnail = Wmi + """
+
+        $service = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_VirtualSystemManagementService
+        $settings = Get-CimAssociatedInstance -InputObject $cs -ResultClassName Msvm_VirtualSystemSettingData | Where-Object { $_.VirtualSystemType -eq 'Microsoft:Hyper-V:System:Realized' }
+        $r = Invoke-CimMethod -InputObject $service -MethodName GetVirtualSystemThumbnailImage -Arguments @{ TargetSystem = $settings; WidthPixels = [uint16]$p.Width; HeightPixels = [uint16]$p.Height }
+        if ($r.ReturnValue -ne 0 -or !$r.ImageData) { throw 'Hyper-V did not return a screen image. Is the machine running?' }
+        [Convert]::ToBase64String([byte[]]$r.ImageData)
+        """;
 }

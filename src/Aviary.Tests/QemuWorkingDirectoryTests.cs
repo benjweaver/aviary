@@ -20,12 +20,16 @@ public sealed class QemuWorkingDirectoryTests
         try
         {
             var vm = await backend.CreateAsync(new() { CpuCores = 1, MemoryMB = 512, DiskGB = 1 });
-            int qmp = FreePort(), vnc = FreePort(); while (qmp == vnc) vnc = FreePort();
-            var broken = QemuCommandBuilder.Build(vm, installation, HostProbe.Detect(), qmp, vnc);
+            Directory.CreateDirectory(QemuEndpoints.RunDirectory);
+            var brokenEndpoints = QemuEndpoints.Create();
+            var broken = QemuCommandBuilder.Build(vm, installation, HostProbe.Detect(), brokenEndpoints);
             broken.WorkingDirectory = root;
             using (var process = Process.Start(broken)!)
             {
                 var stderr = process.StandardError.ReadToEndAsync();
+                // QEMU waits for a client on its QMP pipe before it sets up the display, where the keymap is loaded.
+                using var qmp = new System.IO.Pipes.NamedPipeClientStream(".", brokenEndpoints.QmpPipe, System.IO.Pipes.PipeDirection.InOut);
+                await qmp.ConnectAsync(10000);
                 try
                 {
                     await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
@@ -33,10 +37,13 @@ public sealed class QemuWorkingDirectoryTests
                 }
                 finally { if (!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); } }
             }
-            var fixedStart = QemuCommandBuilder.Build(vm, installation, HostProbe.Detect(), qmp, vnc);
+            var endpoints = QemuEndpoints.Create();
+            var fixedStart = QemuCommandBuilder.Build(vm, installation, HostProbe.Detect(), endpoints);
             Assert.Equal(Path.GetFullPath(installation.Directory), fixedStart.WorkingDirectory);
             using var fixedProcess = Process.Start(fixedStart)!;
             var fixedError = fixedProcess.StandardError.ReadToEndAsync();
+            using var fixedQmp = new System.IO.Pipes.NamedPipeClientStream(".", endpoints.QmpPipe, System.IO.Pipes.PipeDirection.InOut);
+            await fixedQmp.ConnectAsync(10000);
             try
             {
                 await using var client = new VncDisplayClient();
@@ -44,20 +51,22 @@ public sealed class QemuWorkingDirectoryTests
                 while (true)
                 {
                     Assert.False(fixedProcess.HasExited, fixedProcess.HasExited ? await fixedError : "");
-                    using var probe = new TcpClient();
-                    using var attempt = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token); attempt.CancelAfter(500);
-                    try { await probe.ConnectAsync(IPAddress.Loopback, vnc, attempt.Token); break; }
-                    catch (Exception ex) when ((ex is SocketException or OperationCanceledException) && !timeout.IsCancellationRequested) { await Task.Delay(100, timeout.Token); }
+                    if (File.Exists(endpoints.VncSocket)) break;
+                    await Task.Delay(100, timeout.Token);
                 }
-                await client.ConnectAsync(new Connection(vnc), timeout.Token);
+                await client.ConnectAsync(new Connection(endpoints.VncSocket), timeout.Token);
             }
             finally { if (!fixedProcess.HasExited) { fixedProcess.Kill(true); await fixedProcess.WaitForExitAsync(); } }
         }
         finally { await backend.DisposeAsync(); Directory.Delete(root, true); }
     }
-    sealed record Connection(int Port) : IDisplayConnection;
-    static int FreePort()
+    sealed record Connection(string Socket) : IDisplayConnection
     {
-        while (true) { var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); if (port >= 5900) return port; }
+        public async Task<Stream> OpenAsync(CancellationToken token)
+        {
+            var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await Task.Run(() => socket.Connect(new UnixDomainSocketEndPoint(Socket)), token);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
     }
 }

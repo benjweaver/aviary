@@ -19,9 +19,9 @@ public sealed class AdaptiveDisplayTests
         var vm = new VmConfiguration { DiskPath = @"C:\VM\system.qcow2", DynamicDisplay = true };
         var qemu = new QemuInstallation(@"C:\QEMU", "test", [GuestArchitecture.X86_64]);
         var host = new HostCapabilities("X64", 8, 16384, false, "Windows");
-        var args = QemuCommandBuilder.Build(vm, qemu, host, 4444, 5900).ArgumentList;
+        var args = QemuCommandBuilder.Build(vm, qemu, host, TestEndpoints.Fake).ArgumentList;
         Assert.Contains("virtio-vga", args); Assert.Contains("tcg", args); Assert.Contains("ide-hd,drive=system,bus=ide.0,unit=0", args);
-        Assert.DoesNotContain("virtio-vga", QemuCommandBuilder.Build(vm with { DynamicDisplay = false }, qemu, host, 4444, 5900).ArgumentList);
+        Assert.DoesNotContain("virtio-vga", QemuCommandBuilder.Build(vm with { DynamicDisplay = false }, qemu, host, TestEndpoints.Fake).ArgumentList);
     }
     [QemuFact]
     public async Task QemuAcceptsAdaptiveDisplayResizeRequest()
