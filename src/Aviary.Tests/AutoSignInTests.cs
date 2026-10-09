@@ -28,6 +28,34 @@ public sealed class AutoSignInTests
     }
 
     [Fact]
+    public void QemuWindowsSetupSkipsTpmAndSecureBootChecks()
+    {
+        var doc = XDocument.Parse(GuestProvisioning.WindowsAnswerFile(null, null, bypassHardwareChecks: true));
+        var pe = doc.Descendants(Ns + "settings").Single(s => (string?)s.Attribute("pass") == "windowsPE");
+        var paths = pe.Descendants(Ns + "Path").Select(p => p.Value).ToList();
+        Assert.Contains(@"reg add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f", paths);
+        Assert.Contains(paths, p => p.Contains("BypassSecureBootCheck"));
+        Assert.Equal(Enumerable.Range(1, paths.Count).Select(i => i.ToString()), pe.Descendants(Ns + "Order").Select(o => o.Value));
+        Assert.Equal("Microsoft-Windows-Setup", (string?)pe.Element(Ns + "component")!.Attribute("name"));
+        Assert.DoesNotContain(doc.Descendants(Ns + "settings"), s => (string?)s.Attribute("pass") == "oobeSystem"); // no account asked for
+    }
+
+    [Fact]
+    public async Task OnlyQemuWindowsMachinesGetTheBypass()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        string root = Path.Combine(Path.GetTempPath(), "aviary-bypass-" + Guid.NewGuid()); Directory.CreateDirectory(root);
+        try
+        {
+            var qemu = await GuestProvisioning.PrepareAsync(new() { OperatingSystem = "Windows" }, root);
+            var text = System.Text.Encoding.UTF8.GetString(await File.ReadAllBytesAsync(qemu.SetupIsoPath));
+            Assert.Contains("BypassTPMCheck", text);
+            var hyperV = await GuestProvisioning.PrepareAsync(new() { OperatingSystem = "Windows", Engine = Aviary.Core.VmEngine.HyperV, DiskFormat = Aviary.Core.DiskFormat.Vhdx }, Path.Combine(root, "hv"));
+            Assert.Equal("", hyperV.SetupIsoPath);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    [Fact]
     public void AnswerFileWithoutAutoSignInHasNoAutoLogon() =>
         Assert.Empty(XDocument.Parse(GuestProvisioning.WindowsAnswerFile("aviary", "long-enough-password")).Descendants(Ns + "AutoLogon"));
 
