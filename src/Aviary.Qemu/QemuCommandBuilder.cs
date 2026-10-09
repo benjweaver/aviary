@@ -51,6 +51,8 @@ public static class QemuCommandBuilder
         // because QEMU's automatic placement puts a third IDE device on ide.0 and fails.
         if (vm.DriverIsoPath.Length > 0) Add("-blockdev", JsonSerializer.Serialize(new Dictionary<string, object> { ["driver"] = "raw", ["node-name"] = "drivers", ["read-only"] = true, ["file"] = new { driver = "file", filename = Path.GetFullPath(vm.DriverIsoPath) } }), "-device", "ide-cd,drive=drivers,bus=ide.1,unit=1");
         string network = vm.AcceleratedNetwork ? "user,model=virtio-net-pci" : "user,model=e1000";
+        // Clipboard: QEMU's built-in vdagent on the port spice-vdagent looks for. Its mouse stays off; the USB tablet handles pointing.
+        if (vm.SharedClipboard) Add("-chardev", "qemu-vdagent,id=vdagent,clipboard=on,mouse=off", "-device", "virtio-serial-pci", "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0");
         // Linux guests reach SSH through Aviary's broker on SshPort instead (no inbound traffic for guest firewalls).
         if (vm.SshEnabled && !vm.UsesSshAgent) network += $",hostfwd=tcp:127.0.0.1:{vm.SshPort}-:22";
         if (vm.NetworkEnabled) Add("-nic", network); else Add("-nic", "none");

@@ -36,7 +36,9 @@ public sealed partial class MainWindow
         var input = vm.Engine == VmEngine.HyperV
             ? Ui.Stack(Ui.Heading("Managed by Windows", 18), Ui.Text("Open launches Windows Virtual Machine Connection. Enhanced Session features depend on host and guest support. This machine keeps running when Aviary closes.", 14, true), Ui.Text("Moving a Hyper-V machine to another PC requires Hyper-V export/import. Copying a portable Aviary folder does not transfer its Windows registration.", 12, true))
             : Ui.Stack(Ui.Heading("Feels like another window", 18), Ui.Text("Click the guest desktop to type. Move the mouse freely to your other windows. Held keys and mouse buttons are released when you switch away.", 14, true), Ui.Text("Ctrl+Alt+G returns keyboard focus to the toolbar. Adaptive display asks a supported guest desktop to follow the window size.", 12, true)); stack.Children.Add(Ui.Card(input));
-        content.Content = new ScrollViewer { Content = stack, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        var page = new ScrollViewer { Content = stack, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        FileDrop.Attach(page, paths => SendFilesAsync(vm, paths), ReportFiles);
+        content.Content = page;
     }
     static Grid DetailRow(string label, string value)
     {
@@ -77,13 +79,14 @@ public sealed partial class MainWindow
         var acceleration = new ToggleSwitch { Header = "Hardware acceleration", OnContent = "WHPX", OffContent = "Software emulation", IsOn = vm.Acceleration == Acceleration.Whpx, IsEnabled = model.Host.WhpxAvailable || vm.Acceleration == Acceleration.Whpx };
         var dynamic = new ToggleSwitch { Header = "Adaptive display", OnContent = "VirtIO display · resize with window", OffContent = "Compatibility display", IsOn = vm.DynamicDisplay };
         var fastNetwork = new ToggleSwitch { Header = "VirtIO network", IsOn = vm.AcceleratedNetwork, OnContent = "Efficient virtual adapter", OffContent = "Compatibility adapter" };
+        var clipboard = new ToggleSwitch { Header = "Shared clipboard", IsOn = vm.SharedClipboard, OnContent = "Copy and paste text with this PC (guest needs spice-vdagent)", OffContent = "Off" };
         var graphics = new ToggleSwitch { Header = model.Installation?.VirglAvailable == true ? "3D graphics (experimental)" : "3D graphics (not available with this QEMU; uses 2D display)", IsOn = vm.AcceleratedGraphics, IsEnabled = vm.OperatingSystem == "Linux" && (vm.AcceleratedGraphics || model.Installation?.VirglAvailable == true), OnContent = "Host OpenGL · VirtIO", OffContent = "Software rendering" };
         graphics.Toggled += (_, _) => { if (graphics.IsOn) dynamic.IsOn = true; };
         dynamic.Toggled += (_, _) => { if (!dynamic.IsOn) graphics.IsOn = false; };
         var error = new InfoBar { IsOpen = false, IsClosable = false, Severity = InfoBarSeverity.Error };
         var panel = vm.Engine == VmEngine.HyperV
             ? Ui.Stack(name, iso, Ui.Text("Hyper-V applies the name and installer on the next start. Use Hyper-V Manager for hardware or Enhanced Session settings. The engine of an existing machine cannot be changed here.", 12, true), error)
-            : Ui.Stack(name, iso, acceleration, dynamic, graphics, fastNetwork, Ui.Text("VirtIO networking needs a guest driver: modern Linux includes it; for Windows, attach the VirtIO driver CD from the machine menu and install the guest tools first. 3D graphics needs a QEMU build with working virgl, which Windows hosts lack; machines with it on use the 2D adaptive display. Shared networking still uses NAT.", 12, true), Ui.Text("Adaptive display changes the virtual graphics adapter. Linux needs its virtio GPU driver; Windows needs a compatible driver installed. Changes take effect on the next start.", 12, true), error);
+            : Ui.Stack(name, iso, acceleration, dynamic, graphics, fastNetwork, clipboard, Ui.Text("Shared clipboard works while the machine's window is open, and between machines through this PC's clipboard. Linux: install spice-vdagent (e.g. sudo pacman -S spice-vdagent, sudo apt install spice-vdagent) and sign in again. Windows: install the SPICE guest tools.", 12, true), Ui.Text("VirtIO networking needs a guest driver: modern Linux includes it; for Windows, attach the VirtIO driver CD from the machine menu and install the guest tools first. 3D graphics needs a QEMU build with working virgl, which Windows hosts lack; machines with it on use the 2D adaptive display. Shared networking still uses NAT.", 12, true), Ui.Text("Adaptive display changes the virtual graphics adapter. Linux needs its virtio GPU driver; Windows needs a compatible driver installed. Changes take effect on the next start.", 12, true), error);
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Edit configuration", Content = new ScrollViewer { Content = panel, MaxHeight = 480 }, PrimaryButtonText = "Save changes", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary };
         dialog.PrimaryButtonClick += async (_, e) =>
         {
@@ -91,10 +94,10 @@ public sealed partial class MainWindow
             try
             {
                 if (State(vm).Status is not (VmStatus.Stopped or VmStatus.Error)) throw new InvalidOperationException("Shut down the machine before editing its configuration.");
-                var updated = vm with { Name = name.Text.Trim(), IsoPath = iso.Text.Trim(), Acceleration = vm.Engine == VmEngine.HyperV ? vm.Acceleration : acceleration.IsOn ? Acceleration.Whpx : Acceleration.Tcg, DynamicDisplay = vm.Engine == VmEngine.Qemu && dynamic.IsOn, AcceleratedGraphics = vm.Engine == VmEngine.Qemu && graphics.IsOn, AcceleratedNetwork = vm.Engine == VmEngine.Qemu && fastNetwork.IsOn };
+                var updated = vm with { Name = name.Text.Trim(), IsoPath = iso.Text.Trim(), Acceleration = vm.Engine == VmEngine.HyperV ? vm.Acceleration : acceleration.IsOn ? Acceleration.Whpx : Acceleration.Tcg, DynamicDisplay = vm.Engine == VmEngine.Qemu && dynamic.IsOn, AcceleratedGraphics = vm.Engine == VmEngine.Qemu && graphics.IsOn, AcceleratedNetwork = vm.Engine == VmEngine.Qemu && fastNetwork.IsOn, SharedClipboard = vm.Engine == VmEngine.Qemu ? clipboard.IsOn : vm.SharedClipboard };
                 updated.Validate();
                 if (updated.IsoPath.Length > 0 && !File.Exists(updated.IsoPath)) throw new InvalidDataException("Choose an existing ISO or clear the installer field.");
-                if (updated.DynamicDisplay != vm.DynamicDisplay || updated.AcceleratedGraphics != vm.AcceleratedGraphics || updated.AcceleratedNetwork != vm.AcceleratedNetwork)
+                if (updated.DynamicDisplay != vm.DynamicDisplay || updated.AcceleratedGraphics != vm.AcceleratedGraphics || updated.AcceleratedNetwork != vm.AcceleratedNetwork || updated.SharedClipboard != vm.SharedClipboard)
                 {
                     var config = Path.Combine(model.Store.DirectoryFor(vm.Id), "config.json");
                     File.Copy(config, config + ".before-display-change-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff") + ".bak");

@@ -31,7 +31,9 @@ public sealed class ControlService(IMachineLibrary library)
         "press_keys" => PressAsync(Running(Find(args)), args, token),
         "setup_ssh" => SetupSshAsync(Find(args), Bool(args, "type"), !(args.TryGetProperty("keep_unlocked", out var k) && k.ValueKind == JsonValueKind.False), Int(args, "wait_seconds", 120), token),
         "run_command" => RunAsync(Find(args), String(args, "command"), Int(args, "timeout_seconds", 120), token),
-        "put_file" => CopyAsync(Find(args), String(args, "local_path"), String(args, "remote_path"), upload: true, token),
+        "put_file" => args.TryGetProperty("remote_path", out var remote) && remote.ValueKind == JsonValueKind.String && remote.GetString()!.Length > 0
+            ? CopyAsync(Find(args), String(args, "local_path"), String(args, "remote_path"), upload: true, token)
+            : PutInDownloadsAsync(Find(args), String(args, "local_path"), token),
         "get_file" => CopyAsync(Find(args), String(args, "local_path"), String(args, "remote_path"), upload: false, token),
         _ => throw new InvalidOperationException($"Unknown method '{method}'."),
     };
@@ -129,7 +131,7 @@ public sealed class ControlService(IMachineLibrary library)
     async Task<string> ReadyConfigAsync(VmConfiguration vm, CancellationToken token)
     {
         Running(vm);
-        if (!vm.SshEnabled || vm.SshUser.Length == 0) throw new InvalidOperationException($"SSH isn't set up for {vm.Name}. Call setup_ssh first.");
+        if (!vm.SshEnabled || vm.SshUser.Length == 0) throw new InvalidOperationException($"SSH isn't set up for {vm.Name}. Set it up with SSH access in the machine's menu, or the setup_ssh tool.");
         return await RefreshSshConfigAsync(vm, token);
     }
 
@@ -140,6 +142,29 @@ public sealed class ControlService(IMachineLibrary library)
         // ssh itself exits 255 when it can't connect; report that as an error rather than a command result.
         if (result.ExitCode == 255 && result.Output.Length == 0) throw new IOException("SSH connection failed: " + result.Error.Trim());
         return new { result.ExitCode, Stdout = result.Output, Stderr = result.Error, result.TimedOut };
+    }
+
+    async Task<object> PutInDownloadsAsync(VmConfiguration vm, string localPath, CancellationToken token)
+    {
+        if (!Path.IsPathFullyQualified(localPath)) throw new ArgumentException("local_path must be an absolute path on this PC.");
+        return new { ok = true, Guest_folder = await SendFilesAsync(vm, [localPath], token) };
+    }
+
+    // Files dropped on a machine in Aviary land in the guest's Downloads folder. Hyper-V copies over VMBus (no
+    // network or SSH needed); QEMU guests use the SSH connection. Returns where they went, for the UI to report.
+    public async Task<string> SendFilesAsync(VmConfiguration vm, IReadOnlyList<string> paths, CancellationToken token = default)
+    {
+        Running(vm);
+        if (paths.Count == 0) return "";
+        foreach (var path in paths) if (!File.Exists(path) && !Directory.Exists(path)) throw new FileNotFoundException("Nothing to copy at " + path);
+        if (library.Backend.IsHyperVMachine(vm.Id))
+            return await library.Backend.SendFilesOverVmBusAsync(vm, vm.SshUser.Length > 0 ? vm.SshUser : "", paths, token);
+        var config = await ReadyConfigAsync(vm, token);
+        var mkdir = vm.OperatingSystem == "Windows" ? "New-Item -ItemType Directory -Force Downloads | Out-Null" : "mkdir -p Downloads";
+        await ProcessRunner.RunCapturedAsync(OpenSsh("ssh.exe"), ["-F", config, "-o", "BatchMode=yes", "guest", mkdir], TimeSpan.FromSeconds(30), token);
+        var result = await ProcessRunner.RunCapturedAsync(OpenSsh("scp.exe"), ["-F", config, "-o", "BatchMode=yes", "-r", .. paths, "guest:Downloads/"], TimeSpan.FromMinutes(30), token);
+        if (result.ExitCode != 0) throw new IOException("Copy failed: " + (result.Error.Trim().Length > 0 ? result.Error.Trim() : "scp exit " + result.ExitCode));
+        return "Downloads";
     }
 
     async Task<object> CopyAsync(VmConfiguration vm, string localPath, string remotePath, bool upload, CancellationToken token)

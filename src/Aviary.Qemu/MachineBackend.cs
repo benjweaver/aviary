@@ -40,6 +40,8 @@ public sealed class MachineBackend(QemuBackend? qemu, HyperVBackend? hyperV, IEn
     public Task ConfigureAutoSignInAsync(VmConfiguration vm, string user, string password, bool enable, CancellationToken token = default) =>
         IsHyperV(vm.Id) ? HyperV(vm.Id).ConfigureAutoSignInAsync(vm.Id, user, password, enable, token)
             : throw new NotSupportedException("Automatic sign-in for Windows guests on QEMU is set during installation (local-account setup).");
+    public Task<string> SendFilesOverVmBusAsync(VmConfiguration vm, string guestUser, IReadOnlyList<string> paths, CancellationToken token = default) => HyperV(vm.Id).SendFilesAsync(vm.Id, guestUser, paths, token);
+    public bool IsHyperVMachine(Guid id) => IsHyperV(id);
     public void EnableSsh(VmConfiguration vm) { if (!IsHyperV(vm.Id)) qemu?.EnableSsh(vm); }
     // Where ssh connects: Aviary's loopback broker or port forward for QEMU, the guest's own address for Hyper-V.
     public async Task<(string Host, int Port)> SshEndpointAsync(VmConfiguration vm, CancellationToken token = default) =>

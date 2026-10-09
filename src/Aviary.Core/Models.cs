@@ -28,6 +28,8 @@ public sealed record VmConfiguration
     public bool DynamicDisplay { get; init; }
     public bool AcceleratedNetwork { get; init; }
     public bool AcceleratedGraphics { get; init; }
+    // QEMU: clipboard text shared with the host through spice-vdagent in the guest. On unless turned off.
+    public bool SharedClipboard { get; init; } = true;
     public bool LocalWindowsAccount { get; init; }
     public string WindowsUserName { get; init; } = "aviary";
     // Set at creation: the answer file signs in to the local account automatically.

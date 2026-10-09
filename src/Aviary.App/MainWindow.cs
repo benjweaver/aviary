@@ -26,6 +26,11 @@ public sealed partial class MainWindow : Window
     TextBox search = new() { PlaceholderText = "Find a machine", Width = 220, VerticalAlignment = VerticalAlignment.Center };
     Guid? selected;
     ControlServer? control;
+    ControlService? controlService;
+    // Drop target for a machine: copies into its guest and reports in the main window's notice bar.
+    Task<string> SendFilesAsync(VmConfiguration vm, IReadOnlyList<string> paths) =>
+        (controlService ?? throw new InvalidOperationException("Configure a virtualization engine in Settings first.")).SendFilesAsync(model.Machines.FirstOrDefault(m => m.Id == vm.Id) ?? vm, paths);
+    void ReportFiles(string message, bool error) { notice.Title = error ? "Couldn't copy files" : "Files"; notice.Message = message; notice.Severity = error ? InfoBarSeverity.Error : InfoBarSeverity.Informational; notice.IsOpen = true; }
     bool runningOnly, initialized, closing, confirmingClose;
     GridView? libraryGrid;
     TextBlock? countLabel;
@@ -85,7 +90,8 @@ public sealed partial class MainWindow : Window
         if (model.Backend is not null) model.Backend.StateChanged += state => DispatcherQueue.TryEnqueue(() => OnStateChanged(state));
         // Serves aviary-mcp. Recreated with the library whenever settings reload it.
         if (control is not null) await control.DisposeAsync();
-        control = model.Backend is null ? null : new ControlServer(new ControlService(new AppLibrary(model, DispatcherQueue, vm => { if (selected == vm.Id) ShowDetails(vm); })));
+        controlService = model.Backend is null ? null : new ControlService(new AppLibrary(model, DispatcherQueue, vm => { if (selected == vm.Id) ShowDetails(vm); }));
+        control = controlService is null ? null : new ControlServer(controlService);
         hostLabel.Text = $"{model.Host.LogicalCpuCount} CPUs · {Ui.Memory((int)model.Host.MemoryMB)} RAM\n" + (model.Host.WhpxAvailable ? "Hardware acceleration ready" : "Software emulation available");
         if (model.Installation is null && !model.HyperV.Available) { notice.Title = "Connect your virtualization engine"; notice.Message = "Choose QEMU or check Hyper-V availability in Settings."; notice.Severity = InfoBarSeverity.Warning; notice.IsOpen = true; }
         else if (model.LoadErrors.Count > 0) { notice.Title = "Some machines could not be loaded"; notice.Message = string.Join("\n", model.LoadErrors); notice.Severity = InfoBarSeverity.Warning; notice.IsOpen = true; }
@@ -186,7 +192,7 @@ public sealed partial class MainWindow : Window
     {
         if (vm.Engine == VmEngine.HyperV) { await model.Backend!.OpenNativeConsoleAsync(vm.Id); return; }
         if (displays.TryGetValue(vm.Id, out var existing)) { existing.Activate(); return; }
-        var window = new DisplayWindow(vm.Name, vm.DynamicDisplay, () => model.Backend!.StopAsync(vm.Id)); displays[vm.Id] = window;
+        var window = new DisplayWindow(vm.Name, vm.DynamicDisplay, () => model.Backend!.StopAsync(vm.Id), paths => SendFilesAsync(vm, paths)); displays[vm.Id] = window;
         window.Closed += (_, _) => displays.Remove(vm.Id);
         window.PreviewUpdated += (w, h, pixels) =>
         {

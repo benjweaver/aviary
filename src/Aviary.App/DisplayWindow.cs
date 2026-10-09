@@ -66,7 +66,7 @@ public sealed class DisplayWindow : Window
     DateTime lastPreview;
     public event Action<int, int, byte[]>? PreviewUpdated;
 
-    public DisplayWindow(string name, bool dynamicDisplay = false, Func<Task>? shutdown = null)
+    public DisplayWindow(string name, bool dynamicDisplay = false, Func<Task>? shutdown = null, Func<IReadOnlyList<string>, Task<string>>? sendFiles = null)
     {
         Title = name + " — " + Branding.Name; AppWindow.Resize(new Windows.Graphics.SizeInt32(1160, 800)); SystemBackdrop = new MicaBackdrop();
         WindowChrome.Apply(this, root);
@@ -112,16 +112,43 @@ public sealed class DisplayWindow : Window
         surface.PointerExited += (_, _) => RestoreHostPointer();
         surface.PointerWheelChanged += (_, e) => { if (!connected || Map(e.GetCurrentPoint(surface).Position) is null) return; HandlePointer(e, e.GetCurrentPoint(surface).Properties.MouseWheelDelta > 0 ? (byte)8 : (byte)16); HandlePointer(e); e.Handled = true; };
         Activated += (_, e) => { if (e.WindowActivationState == WindowActivationState.Deactivated) { fullscreenShortcut = false; ReleaseInput(); RestoreHostPointer(); } else if (connected && ReferenceEquals(FocusManager.GetFocusedElement(root.XamlRoot), surface)) { keyboard.Focus(); UpdateStatus(); } };
+        if (sendFiles is not null) FileDrop.Attach(surface, sendFiles, (text, _) => ShowMessage(text));
         client.FrameReceived += ReceiveFrame;
         client.CursorChanged += (w, h, x, y, data) => DispatcherQueue.TryEnqueue(() => SetCursor(w, h, x, y, data));
         client.ResizeReply += code => DispatcherQueue.TryEnqueue(() => { if (code is 1 or 2 or 3) { resizeGuest.IsOn = false; ShowMessage("The guest did not accept automatic resizing. Fit to window is still available; enable the guest’s virtio display driver to resize its desktop."); } });
+        // Shared clipboard (text): the guest's copies go to Windows, and Windows' copies are offered to the guest.
+        client.ClipboardReceived += text => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (closed || text == lastClipboard) return;
+            lastClipboard = text;
+            var data = new Windows.ApplicationModel.DataTransfer.DataPackage(); data.SetText(text);
+            try { Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data); } catch (System.Runtime.InteropServices.COMException) { }
+        });
+        Windows.ApplicationModel.DataTransfer.Clipboard.ContentChanged += HostClipboardChanged;
         client.Disconnected += error => DispatcherQueue.TryEnqueue(() => { if (closed) return; connected = false; keyboard.Blur(); RestoreHostPointer(); status.Text = "Display disconnected"; ShowMessage(error); });
-        Closed += async (_, _) => { ReleaseInput(); RestoreHostPointer(); closed = true; connected = false; resizeTimer.Stop(); lifetime.Cancel(); await inputTail; await client.DisposeAsync(); surface.Dispose(); lifetime.Dispose(); };
+        Closed += async (_, _) => { Windows.ApplicationModel.DataTransfer.Clipboard.ContentChanged -= HostClipboardChanged; ReleaseInput(); RestoreHostPointer(); closed = true; connected = false; resizeTimer.Stop(); lifetime.Cancel(); await inputTail; await client.DisposeAsync(); surface.Dispose(); lifetime.Dispose(); };
     }
     public async Task ConnectAsync(IDisplayConnection connection)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); timeout.CancelAfter(TimeSpan.FromSeconds(10));
         await client.ConnectAsync(connection, timeout.Token); connected = true; UpdateStatus(); ScheduleResize();
+        HostClipboardChanged(null, null); // offer whatever is on the Windows clipboard now
+    }
+    string? lastClipboard;
+    // Clipboard changes arrive on the UI thread; the guest only gets text, and not our own echo of its copy.
+    async void HostClipboardChanged(object? sender, object? args)
+    {
+        if (!connected || closed) return;
+        try
+        {
+            var content = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
+            if (!content.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.Text)) return;
+            var text = await content.GetTextAsync();
+            if (text == lastClipboard) return;
+            lastClipboard = text;
+            QueueInput(() => client.SetClipboardTextAsync(text));
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or UnauthorizedAccessException) { }
     }
     void HandleKey(KeyRoutedEventArgs e, bool down)
     {

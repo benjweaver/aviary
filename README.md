@@ -227,6 +227,14 @@ Turn on **SSH access** in a machine's menu (or at creation), start the guest, si
 
 Aviary generates each guest's SSH host key and pins it, so there's no first-connection fingerprint prompt and an impostor fails. Keys live in the machine's `access` folder. To revoke, delete `~/.aviary-ssh` and the `aviary-ssh` service in Linux guests, or the `Aviary-SSH` firewall rule and the key in `administrators_authorized_keys` in Windows guests.
 
+## Clipboard and files
+
+**Clipboard (QEMU):** copy and paste text between this PC and a guest while its window is open. Between two guests, it goes through this PC's clipboard. The guest needs `spice-vdagent` (`sudo pacman -S spice-vdagent`, `sudo apt install spice-vdagent`, then sign in again; Windows guests: the SPICE guest tools). Aviary adds QEMU's vdagent channel and speaks VNC's extended clipboard extension (UTF-8). Turn it off per machine in Edit configuration.
+
+**Clipboard (Hyper-V):** use VMConnect's Enhanced Session (View → Enhanced session), which shares the clipboard and files. It is a separate Remote Desktop session, so Aviary's screenshot and typing tools see the console instead; SSH commands work either way.
+
+**Drag and drop:** drop files or folders from Explorer onto a machine's page in Aviary, or onto a QEMU machine's window, and they're copied to the guest user's Downloads folder. Hyper-V copies them over VMBus (Guest Service Interface), with no guest network or SSH needed. QEMU guests use the SSH connection, so set up SSH access first. AI tools get the same through `put_file` without a `remote_path`.
+
 ## MCP server for AI tools
 
 `aviary-mcp.exe` ships beside `Aviary.App.exe`. It is a stdio [MCP](https://modelcontextprotocol.io) server that lets Claude Code, Codex and other MCP clients use your machines: `list_machines`, `start_machine`, `stop_machine`, `screenshot` (returned as an image), `type_text`, `press_keys`, `setup_ssh`, `run_command`, `put_file` and `get_file`. It forwards each call to the running Aviary app over a named pipe that only your Windows account can open, and starts Aviary if it isn't running.

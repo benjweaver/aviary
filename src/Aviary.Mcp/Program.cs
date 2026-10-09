@@ -38,8 +38,8 @@ public static class Program
             new() { ["machine"] = Machine.DeepClone(), ["type"] = new JsonObject { ["type"] = "boolean", ["description"] = "Type the setup command into the guest's focused window." }, ["keep_unlocked"] = new JsonObject { ["type"] = "boolean", ["description"] = "Linux: turn off automatic screen locking for this user (default true) so screenshots and typing keep working." }, ["wait_seconds"] = new JsonObject { ["type"] = "integer" } }, "machine"),
         Tool("run_command", "Run a shell command in the guest over SSH and return its exit code and output. Linux runs it with the user's shell; Windows with PowerShell. Requires setup_ssh.",
             new() { ["machine"] = Machine.DeepClone(), ["command"] = Str("Command line to run in the guest."), ["timeout_seconds"] = new JsonObject { ["type"] = "integer", ["description"] = "Default 120." } }, "machine", "command"),
-        Tool("put_file", "Copy a file or folder from this PC into the guest over SSH.",
-            new() { ["machine"] = Machine.DeepClone(), ["local_path"] = Str("Absolute path on this PC."), ["remote_path"] = Str("Destination path in the guest.") }, "machine", "local_path", "remote_path"),
+        Tool("put_file", "Copy a file or folder from this PC into the guest. With remote_path it goes there over SSH. Without it, it goes to the guest user's Downloads folder: on Hyper-V that works without SSH (copied over VMBus).",
+            new() { ["machine"] = Machine.DeepClone(), ["local_path"] = Str("Absolute path on this PC."), ["remote_path"] = Str("Destination path in the guest. Optional: omit to use the guest's Downloads folder.") }, "machine", "local_path"),
         Tool("get_file", "Copy a file or folder from the guest to this PC over SSH.",
             new() { ["machine"] = Machine.DeepClone(), ["remote_path"] = Str("Path in the guest."), ["local_path"] = Str("Absolute destination path on this PC.") }, "machine", "remote_path", "local_path"),
     ];

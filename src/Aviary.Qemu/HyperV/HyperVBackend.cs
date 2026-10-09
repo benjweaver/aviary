@@ -183,6 +183,25 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
         { throw new InvalidOperationException("Windows in the guest rejected that account name or password. Use the local account's password, not a PIN.", ex); }
     }
 
+    // Copies host files (folders recursively) into the guest over VMBus; returns the guest folder they went to.
+    public async Task<string> SendFilesAsync(Guid id, string guestUser, IReadOnlyList<string> paths, CancellationToken token = default)
+    {
+        var vm = Require(id);
+        if (vm.OperatingSystem != "Windows") throw new NotSupportedException("Copying files into Hyper-V guests needs a Windows guest.");
+        if (GetStatus(id).Status != VmStatus.Running) throw new InvalidOperationException("Start the machine first.");
+        var target = guestUser.Length > 0 && !guestUser.Any(c => Path.GetInvalidFileNameChars().Contains(c)) ? $@"C:\Users\{guestUser}\Downloads" : @"C:\Users\Public\Downloads";
+        foreach (var path in paths)
+        {
+            var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+            var files = Directory.Exists(path)
+                ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Select(f => (Source: f, Relative: Path.Combine(name, Path.GetRelativePath(path, f))))
+                : [(path, name)];
+            foreach (var (source, relative) in files)
+                await commands.RunAsync(HyperVScripts.CopyIntoGuest, new { vm.Id, vm.HyperVId, Source = source, Destination = Path.Combine(target, relative) }, token);
+        }
+        return target;
+    }
+
     public Task TypeTextAsync(Guid id, string text, CancellationToken token = default) => KeyboardAsync(id, HyperVKeyboard.Text(text).ToArray(), token);
     public Task PressKeysAsync(Guid id, string combo, CancellationToken token = default) => KeyboardAsync(id, [HyperVKeyboard.Chord(combo)], token);
     async Task KeyboardAsync(Guid id, HyperVKeyboard.Step[] steps, CancellationToken token)
