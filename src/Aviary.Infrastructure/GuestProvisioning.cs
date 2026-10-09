@@ -22,15 +22,22 @@ public static class GuestProvisioning
     public static string SshCommand(string machineDirectory) => "ssh -F \"" + ConfigPath(machineDirectory) + "\" guest";
     // The guest-tools install runs at first sign-in, finding the driver CD by its installer since drive letters vary.
     public static string VirtioToolsCommand => $"cmd /c for %d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{VirtioDrivers.GuestToolsInstaller} start /wait msiexec /i %d:\\{VirtioDrivers.GuestToolsInstaller} /qn /norestart";
-    public static string WindowsAnswerFile(string username, string password, bool installVirtioTools = false)
+    // Keeps automatic sign-in on after the answer file's logon count runs out, and lets Windows 11 honor it.
+    public const string KeepAutoSignInCommand = "cmd /c reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v AutoLogonCount /f & reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\PasswordLess\\Device\" /v DevicePasswordLessBuildVersion /t REG_DWORD /d 0 /f";
+    public static string WindowsAnswerFile(string username, string password, bool installVirtioTools = false, bool autoSignIn = false)
     {
         if (!Regex.IsMatch(username, "^[a-zA-Z][a-zA-Z0-9_-]{0,19}$") || password.Length < 12) throw new InvalidDataException("Choose a local username and a password of at least 12 characters.");
         XNamespace ns = "urn:schemas-microsoft-com:unattend", wcm = "http://schemas.microsoft.com/WMIConfig/2002/State";
+        var commands = new List<(string Command, string Description)>();
+        if (autoSignIn) commands.Add((KeepAutoSignInCommand, "Keep automatic sign-in on"));
+        if (installVirtioTools) commands.Add((VirtioToolsCommand, "Install VirtIO drivers (NetKVM)"));
         return new XDocument(new XElement(ns + "unattend", new XAttribute(XNamespace.Xmlns + "wcm", wcm),
             new XElement(ns + "settings", new XAttribute("pass", "oobeSystem"),
                 new XElement(ns + "component", new XAttribute("name", "Microsoft-Windows-Shell-Setup"), new XAttribute("processorArchitecture", "amd64"), new XAttribute("publicKeyToken", "31bf3856ad364e35"), new XAttribute("language", "neutral"), new XAttribute("versionScope", "nonSxS"),
-                    installVirtioTools ? new XElement(ns + "FirstLogonCommands", new XElement(ns + "SynchronousCommand", new XAttribute(wcm + "action", "add"),
-                        new XElement(ns + "Order", 1), new XElement(ns + "CommandLine", VirtioToolsCommand), new XElement(ns + "Description", "Install VirtIO drivers (NetKVM)"))) : null,
+                    autoSignIn ? new XElement(ns + "AutoLogon", new XElement(ns + "Password", new XElement(ns + "Value", password), new XElement(ns + "PlainText", true)),
+                        new XElement(ns + "Enabled", true), new XElement(ns + "LogonCount", 9999999), new XElement(ns + "Username", username)) : null,
+                    commands.Count == 0 ? null : new XElement(ns + "FirstLogonCommands", commands.Select((c, i) => new XElement(ns + "SynchronousCommand", new XAttribute(wcm + "action", "add"),
+                        new XElement(ns + "Order", i + 1), new XElement(ns + "CommandLine", c.Command), new XElement(ns + "Description", c.Description)))),
                     new XElement(ns + "OOBE", new XElement(ns + "HideOnlineAccountScreens", true), new XElement(ns + "HideWirelessSetupInOOBE", true)),
                     new XElement(ns + "UserAccounts", new XElement(ns + "LocalAccounts", new XElement(ns + "LocalAccount", new XAttribute(wcm + "action", "add"),
                         new XElement(ns + "Name", username), new XElement(ns + "DisplayName", username), new XElement(ns + "Group", "Administrators"),
@@ -46,7 +53,7 @@ public static class GuestProvisioning
         var staging = Path.Combine(access, "media-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(staging);
         try
         {
-            await File.WriteAllTextAsync(Path.Combine(staging, "autounattend.xml"), WindowsAnswerFile(vm.WindowsUserName, vm.SetupPassword, vm.DriverIsoPath.Length > 0), token);
+            await File.WriteAllTextAsync(Path.Combine(staging, "autounattend.xml"), WindowsAnswerFile(vm.WindowsUserName, vm.SetupPassword, vm.DriverIsoPath.Length > 0, vm.WindowsAutoSignIn), token);
             await File.WriteAllTextAsync(Path.Combine(staging, "README.txt"), "Aviary setup media for a fresh Windows installation. It contains your local account password: eject it with Eject and remove setup CD after Windows setup.", token);
             var iso = Path.Combine(access, "setup.iso");
             await Task.Run(() => { if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException(); CreateIso(staging, iso); }, token);

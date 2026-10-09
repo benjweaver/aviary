@@ -110,12 +110,13 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
     // Turning SSH on while the machine runs: Linux works immediately; Windows needs a restart for its port forward.
     public void EnableSsh(VmConfiguration vm) { if (sessions.TryGetValue(vm.Id, out var session)) StartSshBroker(vm, session); }
 
-    public async Task<GuestSsh.Setup> BeginSshSetupAsync(VmConfiguration vm, CancellationToken token = default)
+    public async Task<GuestSsh.Setup> BeginSshSetupAsync(VmConfiguration vm, bool keepUnlocked = true, CancellationToken token = default)
     {
         var session = Require(vm.Id);
         if (!vm.SshEnabled) throw new InvalidOperationException("Turn on SSH access first.");
         var broker = session.Broker ?? throw new InvalidOperationException(session.LastError.StartsWith("SSH unavailable", StringComparison.Ordinal) ? session.LastError : "Restart the machine to finish turning on SSH access.");
         var keys = await GuestSsh.EnsureKeysAsync(vm, store.DirectoryFor(vm.Id), token);
+        var msi = vm.UsesSshAgent ? "" : broker.OfferFile(await OpenSshInstaller.EnsureAsync(token));
         var user = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         void Failed(string code) => user.TrySetException(new InvalidOperationException(code switch
         {
@@ -125,8 +126,8 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
             _ => $"Guest setup failed ({code}). See the guest terminal for details.",
         }));
         string setupToken = broker.OfferSetup(t => vm.UsesSshAgent
-            ? GuestSsh.LinuxSetupScript(broker.AgentPort, t, keys)
-            : GuestSsh.WindowsSetupScript(keys, "10.0.2.2", broker.ReportUrl(t)), name => user.TrySetResult(name), Failed);
+            ? GuestSsh.LinuxSetupScript(broker.AgentPort, t, keys, keepUnlocked)
+            : GuestSsh.WindowsSetupScript(keys, "10.0.2.2", broker.ReportUrl(t), msi), name => user.TrySetResult(name), Failed);
         // sh -c so the same line works from bash, zsh and fish; wget covers minimal installs without curl.
         string url = broker.SetupUrl(setupToken);
         string command = vm.UsesSshAgent ? $"sh -c 'curl -fsS {url} || wget -qO- {url}' | sh" : $"irm {url} | iex";

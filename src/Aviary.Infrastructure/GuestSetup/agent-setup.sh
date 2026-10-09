@@ -52,5 +52,20 @@ else
     nohup "$bash" "$d/agent.sh" >/dev/null 2>&1 &
 fi
 
+# Optional: stop the desktop locking itself, so screenshots and typed input reach a usable desktop. Per user, no root.
+if [ "__KEEP_UNLOCKED__" = 1 ]; then
+    for kw in kwriteconfig6 kwriteconfig5; do
+        if command -v "$kw" >/dev/null 2>&1; then
+            "$kw" --file kscreenlockerrc --group Daemon --key Autolock false
+            "$kw" --file kscreenlockerrc --group Daemon --key LockOnResume false
+            break
+        fi
+    done
+    if command -v gsettings >/dev/null 2>&1; then
+        gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+        gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null
+    fi
+fi
+
 report "ok/$(id -un)" || fail no-report "Could not report back to Aviary."
 echo "Aviary SSH is ready for $(id -un). Remove ~/.aviary-ssh and the aviary-ssh service or autostart entry to revoke it."

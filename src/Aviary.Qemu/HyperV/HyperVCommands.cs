@@ -7,24 +7,29 @@ namespace Aviary.HyperV;
 public interface IHyperVCommands
 {
     Task<string> RunAsync(string script, object arguments, CancellationToken token = default);
+    // The secret reaches the script on stdin as $secret, never on a command line other processes can read.
+    Task<string> RunWithSecretAsync(string script, object arguments, string secret, CancellationToken token = default) => throw new NotSupportedException();
 }
 
 public sealed class HyperVCommands : IHyperVCommands
 {
-    public static ProcessStartInfo Build(string script, object arguments)
+    public static ProcessStartInfo Build(string script, object arguments, bool readSecret = false)
     {
         var data = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(arguments));
         var wrapped = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
-            "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + data + "')) | ConvertFrom-Json; try { " + script +
+            "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + data + "')) | ConvertFrom-Json; " + (readSecret ? "$secret=[Console]::In.ReadLine(); " : "") + "try { " + script +
             " } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
         var info = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
-        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = readSecret, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
         foreach (var arg in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapped)) }) info.ArgumentList.Add(arg);
         return info;
     }
-    public async Task<string> RunAsync(string script, object arguments, CancellationToken token = default)
+    public Task<string> RunAsync(string script, object arguments, CancellationToken token = default) => RunCoreAsync(script, arguments, null, token);
+    public Task<string> RunWithSecretAsync(string script, object arguments, string secret, CancellationToken token = default) => RunCoreAsync(script, arguments, secret, token);
+    async Task<string> RunCoreAsync(string script, object arguments, string? secret, CancellationToken token)
     {
-        using var process = Process.Start(Build(script, arguments)) ?? throw new IOException("Windows PowerShell could not start.");
+        using var process = Process.Start(Build(script, arguments, secret is not null)) ?? throw new IOException("Windows PowerShell could not start.");
+        if (secret is not null) { await process.StandardInput.WriteLineAsync(secret); process.StandardInput.Close(); }
         var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromMinutes(2));
         try { await process.WaitForExitAsync(timeout.Token); }
@@ -159,6 +164,60 @@ public static class HyperVScripts
             }
             Start-Sleep -Milliseconds 30
         }
+        """;
+    // Automatic sign-in for a Windows guest, applied over PowerShell Direct with the account's own credentials
+    // ($secret is the password, read from stdin). Like Sysinternals Autologon, the password is kept as the LSA
+    // secret DefaultPassword rather than in the registry. A wrong password fails at New-PSSession, before any change.
+    public const string AutoSignIn = Require + """
+
+        $credential = New-Object System.Management.Automation.PSCredential($p.User, (ConvertTo-SecureString $secret -AsPlainText -Force))
+        $session = New-PSSession -VMId $vm.Id -Credential $credential
+        try {
+            Invoke-Command -Session $session -ArgumentList $p.User, $secret, $p.Enable -ScriptBlock {
+                param($user, $password, $enable)
+                $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+                if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "$user isn't an administrator in the guest." }
+                Add-Type -TypeDefinition @'
+        using System; using System.ComponentModel; using System.Runtime.InteropServices;
+        public static class AviaryLsaSecret {
+            [StructLayout(LayoutKind.Sequential)] struct Text { public ushort Length, MaximumLength; public IntPtr Buffer; }
+            [StructLayout(LayoutKind.Sequential)] struct Attributes { public int Length; public IntPtr RootDirectory, ObjectName; public uint Flags; public IntPtr SecurityDescriptor, SecurityQualityOfService; }
+            [DllImport("advapi32.dll")] static extern uint LsaOpenPolicy(IntPtr system, ref Attributes attributes, uint access, out IntPtr policy);
+            [DllImport("advapi32.dll")] static extern uint LsaStorePrivateData(IntPtr policy, ref Text key, IntPtr data);
+            [DllImport("advapi32.dll")] static extern uint LsaClose(IntPtr policy);
+            [DllImport("advapi32.dll")] static extern int LsaNtStatusToWinError(uint status);
+            static Text Make(string s) { return new Text { Buffer = Marshal.StringToHGlobalUni(s), Length = (ushort)(s.Length * 2), MaximumLength = (ushort)(s.Length * 2 + 2) }; }
+            public static void Store(string name, string value) {
+                var attributes = new Attributes(); IntPtr policy;
+                uint status = LsaOpenPolicy(IntPtr.Zero, ref attributes, 0x000F0FFF, out policy);
+                if (status != 0) throw new Win32Exception(LsaNtStatusToWinError(status));
+                var key = Make(name); var data = value == null ? (Text?)null : Make(value); IntPtr pointer = IntPtr.Zero;
+                try {
+                    if (data.HasValue) { pointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); Marshal.StructureToPtr(data.Value, pointer, false); }
+                    status = LsaStorePrivateData(policy, ref key, pointer);
+                    if (status != 0 && !(value == null && status == 0xC0000034)) throw new Win32Exception(LsaNtStatusToWinError(status));
+                } finally {
+                    Marshal.FreeHGlobal(key.Buffer); if (data.HasValue) Marshal.FreeHGlobal(data.Value.Buffer); if (pointer != IntPtr.Zero) Marshal.FreeHGlobal(pointer); LsaClose(policy);
+                }
+            }
+        }
+        '@
+                $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+                Remove-ItemProperty -Path $winlogon -Name DefaultPassword, AutoLogonCount -ErrorAction SilentlyContinue
+                if ($enable) {
+                    [AviaryLsaSecret]::Store('DefaultPassword', $password)
+                    Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '1'
+                    Set-ItemProperty -Path $winlogon -Name DefaultUserName -Value $user
+                    Set-ItemProperty -Path $winlogon -Name DefaultDomainName -Value $env:COMPUTERNAME
+                    # Windows 11 ignores automatic sign-in while "only allow Windows Hello sign-in" is on.
+                    $passwordless = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
+                    if (Test-Path $passwordless) { Set-ItemProperty -Path $passwordless -Name DevicePasswordLessBuildVersion -Value 0 }
+                } else {
+                    [AviaryLsaSecret]::Store('DefaultPassword', $null)
+                    Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '0'
+                }
+            }
+        } finally { Remove-PSSession $session }
         """;
     // Raw RGB565 frame of the guest display, base64.
     public const string Thumbnail = Wmi + """

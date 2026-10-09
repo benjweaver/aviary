@@ -43,6 +43,23 @@ public sealed class GuestSshTests
     }
 
     [Fact]
+    public async Task BrokerServesOfferedFilesAtUnguessableUrls()
+    {
+        var (agent, client) = Ports();
+        var file = Path.Combine(Path.GetTempPath(), "aviary-offer-" + Guid.NewGuid() + ".msi");
+        await File.WriteAllBytesAsync(file, Enumerable.Range(0, 70000).Select(i => (byte)i).ToArray());
+        try
+        {
+            await using var broker = new GuestSshBroker(agent, 0);
+            var url = broker.OfferFile(file);
+            Assert.Matches($"^http://10\\.0\\.2\\.2:{agent}/f/[0-9a-f]{{24}}$", url);
+            var reply = await HttpGetAsync(agent, new Uri(url).AbsolutePath);
+            Assert.StartsWith("HTTP/1.1 200", reply); Assert.Contains("Content-Length: 70000", reply);
+            Assert.StartsWith("HTTP/1.1 404", await HttpGetAsync(agent, "/f/" + new string('0', 24)));
+        }
+        finally { File.Delete(file); }
+    }
+    [Fact]
     public async Task FailureReportsReachTheCaller()
     {
         var (agent, client) = Ports();
@@ -113,7 +130,8 @@ public sealed class GuestSshTests
     [InlineData("gateway", "kvp:abc")]
     public async Task WindowsSetupScriptParsesAndIsFilledIn(string remote, string report)
     {
-        var script = GuestSsh.WindowsSetupScript(SampleKeys, remote, report);
+        var script = GuestSsh.WindowsSetupScript(SampleKeys, remote, report, @"C:\ProgramData\Aviary\OpenSSH.msi");
+        Assert.Contains(@"'C:\ProgramData\Aviary\OpenSSH.msi'", script); Assert.Contains("ADDLOCAL=Server", script);
         Assert.DoesNotContain("__", script);
         Assert.Contains($"'{report}'", script); Assert.Contains($"'{remote}'", script); Assert.Contains(SampleKeys.HostPublicKey, script);
         await new HyperVCommands().RunAsync("$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseInput($p.Script,[ref]$t,[ref]$e)|Out-Null;if($e.Count){throw ($e|Out-String)}", new { Script = script });
@@ -150,6 +168,15 @@ public sealed class GuestSshTests
         var vm = new VmConfiguration { OperatingSystem = os, DiskPath = @"C:\VM\disk.qcow2", SshEnabled = true, SshPort = 40000, SshAgentPort = 40001 };
         var nic = QemuCommandBuilder.Build(vm, new(@"C:\QEMU", "test", [GuestArchitecture.X86_64]), new("X64", 8, 16384, false, "Windows"), TestEndpoints.Fake).ArgumentList.Single(a => a.StartsWith("user,", StringComparison.Ordinal));
         Assert.Equal(forwarded, nic.Contains("hostfwd=tcp:127.0.0.1:40000-:22"));
+    }
+
+    [Fact]
+    public void SshPortRulesDependOnTheEngine()
+    {
+        new VmConfiguration { Engine = VmEngine.HyperV, DiskFormat = DiskFormat.Vhdx, SshEnabled = true, SshPort = 22 }.Validate();
+        new VmConfiguration { SshEnabled = true, SshPort = 40000, SshAgentPort = 40001 }.Validate();
+        Assert.Throws<InvalidDataException>(() => new VmConfiguration { SshEnabled = true, SshPort = 22 }.Validate());
+        Assert.Throws<InvalidDataException>(() => new VmConfiguration { Engine = VmEngine.HyperV, DiskFormat = DiskFormat.Vhdx, SshEnabled = true, SshPort = 40000 }.Validate());
     }
 
     [Fact]

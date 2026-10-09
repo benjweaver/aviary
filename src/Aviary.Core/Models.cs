@@ -30,6 +30,8 @@ public sealed record VmConfiguration
     public bool AcceleratedGraphics { get; init; }
     public bool LocalWindowsAccount { get; init; }
     public string WindowsUserName { get; init; } = "aviary";
+    // Set at creation: the answer file signs in to the local account automatically.
+    public bool WindowsAutoSignIn { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
     public string SetupPassword { get; init; } = "";
     public string SetupIsoPath { get; init; } = "";
@@ -48,7 +50,9 @@ public sealed record VmConfiguration
         if (AcceleratedGraphics && (Engine != VmEngine.Qemu || OperatingSystem != "Linux" || !DynamicDisplay)) throw new InvalidDataException("3D graphics requires a QEMU Linux guest with adaptive display enabled.");
         if (LocalWindowsAccount && OperatingSystem != "Windows") throw new InvalidDataException("Local Windows setup requires a Windows guest.");
         if (!System.Text.RegularExpressions.Regex.IsMatch(WindowsUserName, "^[a-zA-Z][a-zA-Z0-9_-]{0,19}$")) throw new InvalidDataException("Use a short local username containing letters, digits, underscores or hyphens.");
-        if (SshEnabled && (!NetworkEnabled || SshPort < 1024 || SshPort > 65535)) throw new InvalidDataException("SSH access requires networking and a host port from 1024 to 65535.");
+        if (SshEnabled && !NetworkEnabled) throw new InvalidDataException("SSH access requires networking.");
+        // QEMU guests are reached through a host port; Hyper-V guests directly on port 22 at their own address.
+        if (SshEnabled && (Engine == VmEngine.Qemu ? SshPort < 1024 || SshPort > 65535 : SshPort != 22)) throw new InvalidDataException("SSH access needs a host port from 1024 to 65535 for QEMU, or port 22 for Hyper-V.");
         if (SshHost.Length > 0 && !System.Net.IPAddress.TryParse(SshHost, out _)) throw new InvalidDataException("Enter the guest IP address for SSH.");
         if (SshAgentPort != 0 && (SshAgentPort < 1024 || SshAgentPort > 65535 || SshAgentPort == SshPort)) throw new InvalidDataException("The SSH agent port must be a separate host port from 1024 to 65535.");
         if (SshUser.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(SshUser, "^[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}$")) throw new InvalidDataException("The guest reported an invalid user name.");

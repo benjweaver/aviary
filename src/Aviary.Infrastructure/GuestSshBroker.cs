@@ -20,6 +20,7 @@ public sealed partial class GuestSshBroker : IAsyncDisposable
     readonly ConcurrentQueue<TcpClient> idle = new();
     readonly SemaphoreSlim available = new(0);
     readonly ConcurrentDictionary<string, Setup> setups = new();
+    readonly ConcurrentDictionary<string, string> files = new();
     readonly CancellationTokenSource lifetime = new();
     readonly Task agentLoop, clientLoop;
     sealed record Setup(string Script, Action<string> Ready, Action<string> Failed);
@@ -47,6 +48,14 @@ public sealed partial class GuestSshBroker : IAsyncDisposable
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
         setups[token] = new(script(token), ready, failed);
         return token;
+    }
+
+    // Serves a host file (the OpenSSH MSI for Windows guests) at an unguessable URL until the broker closes.
+    public string OfferFile(string path)
+    {
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
+        files[token] = path;
+        return $"http://10.0.2.2:{AgentPort}/f/{token}";
     }
 
     public string SetupUrl(string token) => $"http://10.0.2.2:{AgentPort}/s/{token}";
@@ -89,7 +98,7 @@ public sealed partial class GuestSshBroker : IAsyncDisposable
         return Encoding.ASCII.GetString(bytes.ToArray());
     }
 
-    [GeneratedRegex("^GET /(s|done)/([0-9a-f]{24})(?:/(ok|error)/([A-Za-z0-9_.%-]{1,96}))? HTTP/1\\.[01]$")]
+    [GeneratedRegex("^GET /(s|done|f)/([0-9a-f]{24})(?:/(ok|error)/([A-Za-z0-9_.%-]{1,96}))? HTTP/1\\.[01]$")]
     private static partial Regex Request();
 
     async Task ServeAsync(TcpClient connection, string requestLine, CancellationToken token)
@@ -98,6 +107,13 @@ public sealed partial class GuestSshBroker : IAsyncDisposable
         while ((await ReadLineAsync(stream, token)).Length > 0) { } // headers
         var match = Request().Match(requestLine);
         string status = "404 Not Found", body = "";
+        if (match.Success && match.Groups[1].Value == "f" && !match.Groups[3].Success && files.TryGetValue(match.Groups[2].Value, out var file) && File.Exists(file))
+        {
+            var bytes = await File.ReadAllBytesAsync(file, token);
+            await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n"), token);
+            await stream.WriteAsync(bytes, token);
+            return;
+        }
         if (match.Success && match.Groups[1].Value == "s" && setups.TryGetValue(match.Groups[2].Value, out var offered) && !match.Groups[3].Success)
         { status = "200 OK"; body = offered.Script; }
         else if (match.Success && match.Groups[1].Value == "done" && match.Groups[3].Success && setups.TryRemove(match.Groups[2].Value, out var finished))

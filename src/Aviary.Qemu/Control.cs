@@ -29,7 +29,7 @@ public sealed class ControlService(IMachineLibrary library)
         "screenshot" => ScreenshotAsync(Find(args), token),
         "type_text" => Done(library.Backend.TypeTextAsync(Running(Find(args)).Id, String(args, "text"), token)),
         "press_keys" => PressAsync(Running(Find(args)), args, token),
-        "setup_ssh" => SetupSshAsync(Find(args), Bool(args, "type"), Int(args, "wait_seconds", 120), token),
+        "setup_ssh" => SetupSshAsync(Find(args), Bool(args, "type"), !(args.TryGetProperty("keep_unlocked", out var k) && k.ValueKind == JsonValueKind.False), Int(args, "wait_seconds", 120), token),
         "run_command" => RunAsync(Find(args), String(args, "command"), Int(args, "timeout_seconds", 120), token),
         "put_file" => CopyAsync(Find(args), String(args, "local_path"), String(args, "remote_path"), upload: true, token),
         "get_file" => CopyAsync(Find(args), String(args, "local_path"), String(args, "remote_path"), upload: false, token),
@@ -82,7 +82,7 @@ public sealed class ControlService(IMachineLibrary library)
     }
 
     // Turns SSH on if needed, starts the guest-side setup, optionally types the command, and waits for the guest.
-    async Task<object> SetupSshAsync(VmConfiguration vm, bool type, int waitSeconds, CancellationToken token)
+    async Task<object> SetupSshAsync(VmConfiguration vm, bool type, bool keepUnlocked, int waitSeconds, CancellationToken token)
     {
         Running(vm);
         if (!vm.NetworkEnabled) throw new InvalidOperationException("Turn on networking for this machine first.");
@@ -96,7 +96,7 @@ public sealed class ControlService(IMachineLibrary library)
             if (vm.Engine == VmEngine.Qemu && !vm.UsesSshAgent)
                 return new { Ready = false, Message = "SSH is now on. Restart this Windows machine so its SSH port opens, then call setup_ssh again." };
         }
-        var setup = await library.Backend.BeginSshSetupAsync(vm, token);
+        var setup = await library.Backend.BeginSshSetupAsync(vm, keepUnlocked, token);
         var machine = vm;
         var finished = setup.User.ContinueWith(async t =>
         {

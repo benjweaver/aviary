@@ -55,6 +55,7 @@ public sealed partial class MainWindow
         if (state is VmStatus.Running or VmStatus.Paused or VmStatus.Stopping) Add("Force power off…", Symbol.Stop, async () => { if (await Confirm("Force power off?", "The guest will stop immediately. Unsaved work may be lost.", "Power off")) await model.Backend!.ForceStopAsync(vm.Id); });
         if (state == VmStatus.Stopped || state == VmStatus.Error && vm.Engine == VmEngine.Qemu) Add("Edit configuration", Symbol.Edit, () => EditAsync(vm));
         Add("SSH access...", Symbol.Document, () => SshAccessAsync(vm));
+        if (vm.Engine == VmEngine.HyperV && vm.OperatingSystem == "Windows" && state == VmStatus.Running) Add("Sign in automatically…", Symbol.Contact, () => AutoSignInAsync(vm));
         if (vm.SetupIsoPath.Length > 0 && state == VmStatus.Stopped) Add("Eject and remove setup CD", Symbol.Remove, () => EjectSetupAsync(vm));
         if (vm.Engine == VmEngine.Qemu && vm.OperatingSystem == "Windows" && state == VmStatus.Stopped)
         {

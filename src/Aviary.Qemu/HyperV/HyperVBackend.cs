@@ -145,15 +145,20 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
         var keys = await GuestSsh.EnsureKeysAsync(configuration, store.DirectoryFor(vm.Id), token);
         var nonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
         var staged = Path.Combine(GuestProvisioning.AccessDirectory(store.DirectoryFor(vm.Id)), "ssh-setup.ps1");
-        await File.WriteAllTextAsync(staged, GuestSsh.WindowsSetupScript(keys, "gateway", "kvp:" + nonce), new System.Text.UTF8Encoding(true), token);
-        try { await commands.RunAsync(HyperVScripts.CopyIntoGuest, new { vm.Id, vm.HyperVId, Source = staged, Destination = GuestSsh.WindowsSetupPath }, token); }
+        await File.WriteAllTextAsync(staged, GuestSsh.WindowsSetupScript(keys, "gateway", "kvp:" + nonce, OpenSshInstaller.GuestPath), new System.Text.UTF8Encoding(true), token);
+        try
+        {
+            // The installer goes in over VMBus too, so OpenSSH installs without the guest's network or Windows Update.
+            await commands.RunAsync(HyperVScripts.CopyIntoGuest, new { vm.Id, vm.HyperVId, Source = await OpenSshInstaller.EnsureAsync(token), Destination = OpenSshInstaller.GuestPath }, token);
+            await commands.RunAsync(HyperVScripts.CopyIntoGuest, new { vm.Id, vm.HyperVId, Source = staged, Destination = GuestSsh.WindowsSetupPath }, token);
+        }
         finally { File.Delete(staged); }
         return new($"powershell -NoProfile -ExecutionPolicy Bypass -File {GuestSsh.WindowsSetupPath}", WaitForReportAsync(vm, nonce));
     }
 
     async Task<string> WaitForReportAsync(VmConfiguration vm, string nonce)
     {
-        var deadline = DateTime.UtcNow.AddMinutes(15); // installing OpenSSH Server can take a while
+        var deadline = DateTime.UtcNow.AddMinutes(45); // OpenSSH Server comes from Windows Update, which can be slow in a VM
         while (DateTime.UtcNow < deadline)
         {
             await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token);
@@ -163,7 +168,19 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
             if (parts is ["ok", var user]) return user;
             throw new InvalidOperationException(parts.ElementAtOrDefault(1) == "not-admin" ? "Run the command in PowerShell opened as administrator." : "Guest SSH setup failed. See the guest PowerShell window for details.");
         }
-        throw new TimeoutException("The guest didn't finish SSH setup within 15 minutes.");
+        throw new TimeoutException("The guest didn't finish SSH setup within 45 minutes. If it's still installing, run setup again once it finishes.");
+    }
+
+    // Windows guests: turn automatic sign-in on or off. The password is used once and not kept by Aviary.
+    public async Task ConfigureAutoSignInAsync(Guid id, string user, string password, bool enable, CancellationToken token = default)
+    {
+        var vm = Require(id);
+        if (vm.OperatingSystem != "Windows") throw new NotSupportedException("Automatic sign-in setup is for Windows guests.");
+        if (GetStatus(id).Status != VmStatus.Running) throw new InvalidOperationException("Start the machine and wait for Windows to finish booting first.");
+        if (user.Length == 0 || password.Length == 0) throw new ArgumentException("Enter the guest account name and its password.");
+        try { await commands.RunWithSecretAsync(HyperVScripts.AutoSignIn, new { vm.Id, vm.HyperVId, User = user, Enable = enable }, password, token); }
+        catch (IOException ex) when (ex.Message.Contains("credential", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("password", StringComparison.OrdinalIgnoreCase))
+        { throw new InvalidOperationException("Windows in the guest rejected that account name or password. Use the local account's password, not a PIN.", ex); }
     }
 
     public Task TypeTextAsync(Guid id, string text, CancellationToken token = default) => KeyboardAsync(id, HyperVKeyboard.Text(text).ToArray(), token);

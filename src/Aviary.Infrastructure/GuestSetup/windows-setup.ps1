@@ -20,8 +20,22 @@ try {
     $user = $env:USERNAME
 
     if (!(Get-Service sshd -ErrorAction SilentlyContinue)) {
-        Write-Host 'Installing OpenSSH Server (may take a few minutes)...'
-        Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
+        # Aviary supplies Microsoft's OpenSSH MSI (copied in over VMBus, or served by Aviary on the host), which
+        # installs in seconds without the guest's network. Windows Update's capability is only the fallback.
+        $msi = '__OPENSSH_MSI__'
+        if ($msi.StartsWith('http')) {
+            $download = Join-Path $env:TEMP 'aviary-openssh.msi'
+            try { Invoke-WebRequest -UseBasicParsing $msi -OutFile $download; $msi = $download } catch { $msi = '' }
+        }
+        if ($msi -and (Test-Path -LiteralPath $msi)) {
+            Write-Host 'Installing OpenSSH Server...'
+            $install = Start-Process msiexec.exe -ArgumentList '/i', ('"' + $msi + '"'), '/qn', '/norestart', 'ADDLOCAL=Server' -Wait -PassThru
+            Remove-Item -LiteralPath $msi -Force -ErrorAction SilentlyContinue
+            if ($install.ExitCode -notin 0, 3010) { throw ('The OpenSSH installer failed with exit code ' + $install.ExitCode + '.') }
+        } else {
+            Write-Host 'Installing OpenSSH Server from Windows Update (may take several minutes)...'
+            Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
+        }
     }
     Set-Service sshd -StartupType Automatic
     Start-Service sshd   # first start creates %ProgramData%\ssh and its default configuration
@@ -53,10 +67,14 @@ try {
     }
     Get-NetFirewallRule -Name 'Aviary-SSH' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     New-NetFirewallRule -Name 'Aviary-SSH' -DisplayName 'Aviary SSH from host' -Direction Inbound -Protocol TCP -LocalPort 22 -RemoteAddress $remote -Action Allow | Out-Null
-    # The capability's own rule allows SSH from anywhere; keep it off.
-    Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
+    # The capability's and the MSI's own rules allow SSH from anywhere; keep them off.
+    Get-NetFirewallRule -Direction Inbound -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'Aviary-SSH' -and ($_.Name -like 'OpenSSH*' -or $_.DisplayName -like '*OpenSSH*' -or $_.DisplayName -like '*sshd*') } |
+        Disable-NetFirewallRule
 
-    & "$env:windir\System32\OpenSSH\sshd.exe" -t
+    # The built-in capability lives in System32\OpenSSH, the MSI in Program Files\OpenSSH.
+    $sshd = (Get-CimInstance Win32_Service -Filter "Name='sshd'").PathName -replace '^"?([^"]+?\.exe)"?.*$', '$1'
+    & $sshd -t
     if ($LASTEXITCODE -ne 0) { throw 'sshd rejected its configuration.' }
     Restart-Service sshd
     Send-Report 'ok' $user

@@ -54,19 +54,22 @@ public static class GuestSsh
     }
 
     // POSIX sh, run as the desktop user via: curl -fsS http://10.0.2.2:<port>/s/<token> | sh
-    public static string LinuxSetupScript(int agentPort, string token, Keys keys) => Template("agent-setup.sh").Replace("\r\n", "\n")
+    public static string LinuxSetupScript(int agentPort, string token, Keys keys, bool keepUnlocked = true) => Template("agent-setup.sh").Replace("\r\n", "\n")
+        .Replace("__KEEP_UNLOCKED__", keepUnlocked ? "1" : "0", StringComparison.Ordinal)
         .Replace("__PORT__", agentPort.ToString(), StringComparison.Ordinal)
         .Replace("__TOKEN__", token, StringComparison.Ordinal)
         .Replace("__AUTHORIZED_KEY__", keys.AuthorizedKey, StringComparison.Ordinal)
         .Replace("__HOST_KEY_B64__", Convert.ToBase64String(Encoding.ASCII.GetBytes(keys.HostPrivateKey)), StringComparison.Ordinal);
 
     // Windows PowerShell 5.1, run elevated. reportUrl is "kvp:<token>" on Hyper-V, which reports through KVP instead of HTTP.
-    public static string WindowsSetupScript(Keys keys, string firewallRemoteAddress, string reportUrl) => Template("windows-setup.ps1").Replace("\r\n", "\n").Replace("\n", "\r\n")
+    // openSshMsi is the MSI's path in the guest or a URL on Aviary's broker; empty falls back to Windows Update.
+    public static string WindowsSetupScript(Keys keys, string firewallRemoteAddress, string reportUrl, string openSshMsi = "") => Template("windows-setup.ps1").Replace("\r\n", "\n").Replace("\n", "\r\n")
         .Replace("__AUTHORIZED_KEY__", keys.AuthorizedKey, StringComparison.Ordinal)
         .Replace("__HOST_KEY_B64__", Convert.ToBase64String(Encoding.ASCII.GetBytes(keys.HostPrivateKey)), StringComparison.Ordinal)
         .Replace("__HOST_PUBLIC_KEY__", keys.HostPublicKey, StringComparison.Ordinal)
         .Replace("__REMOTE_ADDRESS__", firewallRemoteAddress, StringComparison.Ordinal)
-        .Replace("__REPORT_URL__", reportUrl, StringComparison.Ordinal);
+        .Replace("__REPORT_URL__", reportUrl, StringComparison.Ordinal)
+        .Replace("__OPENSSH_MSI__", openSshMsi, StringComparison.Ordinal);
 
     public static string SetupInstruction(VmConfiguration vm) => vm.OperatingSystem == "Windows"
         ? "Open PowerShell as administrator in the guest (Win+X, then Terminal (Admin)) and leave it focused."

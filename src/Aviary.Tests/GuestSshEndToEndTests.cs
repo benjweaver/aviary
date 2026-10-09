@@ -49,7 +49,7 @@ public sealed class GuestSshEndToEndTests(ITestOutputHelper output)
             await backend.TypeTextAsync(vm.Id, "setup-interfaces -a && rc-service networking restart; setup-apkrepos -1 && apk add openssh bash\n", timeout.Token);
             await Task.Delay(TimeSpan.FromSeconds(45), timeout.Token);
 
-            var setup = await backend.BeginSshSetupAsync(vm, timeout.Token);
+            var setup = await backend.BeginSshSetupAsync(vm, token: timeout.Token);
             await backend.TypeTextAsync(vm.Id, setup.Command + "\n", timeout.Token);
             string user;
             try { user = await setup.User.WaitAsync(TimeSpan.FromMinutes(2), timeout.Token); }
@@ -104,7 +104,7 @@ public sealed class GuestSshEndToEndTests(ITestOutputHelper output)
             await backend.SendChordAsync(vm.Id, QemuKeyboard.Chord("ctrl+alt+t"), timeout.Token);
             await Task.Delay(TimeSpan.FromSeconds(6), timeout.Token);
 
-            var setup = await backend.BeginSshSetupAsync(vm, timeout.Token);
+            var setup = await backend.BeginSshSetupAsync(vm, token: timeout.Token);
             output.WriteLine("Typing: " + setup.Command);
             await backend.TypeTextAsync(vm.Id, setup.Command + "\n", timeout.Token);
             string Shot(string name) => Path.Combine(Path.GetTempPath(), $"aviary-e2e-{name}.png");

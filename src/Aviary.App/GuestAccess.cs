@@ -116,6 +116,35 @@ public sealed partial class MainWindow
         using var process = System.Diagnostics.Process.Start(start);
     }
 #endif
+    // The password goes straight to the guest over PowerShell Direct; Aviary doesn't store it.
+    async Task AutoSignInAsync(VmConfiguration vm)
+    {
+        var backend = model.Backend ?? throw new InvalidOperationException("Hyper-V is unavailable.");
+        var user = new TextBox { Header = "Windows account in the guest", Text = vm.SshUser.Length > 0 ? vm.SshUser : vm.WindowsUserName };
+        var password = new PasswordBox { Header = "Its password" };
+        var error = new InfoBar { IsOpen = false, Severity = InfoBarSeverity.Error, IsClosable = false };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = root.XamlRoot, Title = "Sign in automatically · " + vm.Name,
+            Content = Ui.Stack(
+                Ui.Text("Windows will sign in to this account at startup, so the desktop is ready for you and for tools that type into the guest or take screenshots. Those tools use the VM's console, not an Enhanced Session.", 13, true),
+                user, password,
+                Ui.Text("Aviary uses the password once to apply the setting and doesn't keep it. Windows stores it as an encrypted LSA secret, as Microsoft's Autologon tool does. Anyone who can start this VM gets that account's desktop.", 12, true),
+                error),
+            PrimaryButtonText = "Turn on", SecondaryButtonText = "Turn off", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary,
+        };
+        async void Apply(ContentDialog sender, ContentDialogButtonClickEventArgs e, bool enable)
+        {
+            var deferral = e.GetDeferral();
+            try { await backend.ConfigureAutoSignInAsync(vm, user.Text.Trim(), password.Password, enable); password.Password = ""; }
+            catch (Exception ex) { e.Cancel = true; error.Message = ex.Message; error.IsOpen = true; }
+            finally { deferral.Complete(); }
+        }
+        dialog.PrimaryButtonClick += (s, e) => Apply(s, e, true);
+        dialog.SecondaryButtonClick += (s, e) => Apply(s, e, false);
+        await dialog.ShowAsync();
+    }
+
     async Task AttachDriversAsync(VmConfiguration vm)
     {
         if (State(vm).Status != VmStatus.Stopped) throw new InvalidOperationException("Shut down the machine before attaching the driver CD.");
