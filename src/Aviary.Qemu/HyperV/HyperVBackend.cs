@@ -176,7 +176,8 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
 
     public async Task<byte[]> ScreenshotAsync(Guid id, CancellationToken token = default)
     {
-        const int width = 1280, height = 800; // Hyper-V scales the guest display into this frame
+        // Hyper-V scales the guest display into this frame; larger sizes such as 1280x800 fail with 32775 (invalid parameter).
+        const int width = 1024, height = 768;
         var vm = Require(id);
         var pixels = Convert.FromBase64String(await commands.RunAsync(HyperVScripts.Thumbnail, new { vm.Id, vm.HyperVId, Width = width, Height = height }, token));
         return Png.FromRgb565(pixels, width, height);
