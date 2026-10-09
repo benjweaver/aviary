@@ -20,13 +20,18 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
             try { await Task.Run(() => socket.Connect(new UnixDomainSocketEndPoint(Endpoints.VncSocket)), token); return new NetworkStream(socket, ownsSocket: true); }
             catch { socket.Dispose(); throw; }
         }
-        public string LastError = ""; public bool Forced; public GuestSshBroker? Broker; public volatile bool Exited; public int Id { get; } = process.Id; public DateTimeOffset StartedAt { get; } = new(process.StartTime); public Task? Monitor;
+        public string LastError = ""; public bool Forced; public GuestSshBroker? Broker; public bool GlWindow; public volatile bool Exited; public int Id { get; } = process.Id; public DateTimeOffset StartedAt { get; } = new(process.StartTime); public Task? Monitor;
     }
     readonly ConcurrentDictionary<Guid, Session> sessions = new(); readonly ConcurrentBag<Process> completed = []; readonly ConcurrentDictionary<Guid, VmState> states = new(); readonly ConcurrentDictionary<Guid, SemaphoreSlim> gates = new();
     public event Action<VmState>? StateChanged;
     public VmState GetStatus(Guid id) => states.GetValueOrDefault(id) ?? new(id, VmStatus.Stopped);
     void Set(Guid id, VmStatus status, string? error = null, Session? session = null) { var state = new VmState(id, status, error, session?.Id, session?.StartedAt); states[id] = state; StateChanged?.Invoke(state); }
-    public IDisplayConnection GetDisplay(Guid id) => sessions.TryGetValue(id, out var session) ? session : throw new InvalidOperationException("VM is not running.");
+    public IDisplayConnection GetDisplay(Guid id) => sessions.TryGetValue(id, out var session)
+        ? session.GlWindow ? throw new InvalidOperationException("This machine shows 3D graphics in its own window.") : session
+        : throw new InvalidOperationException("VM is not running.");
+    // 3D machines on Windows hosts draw in QEMU's own window instead of Aviary's display.
+    public bool UsesOwnWindow(Guid id) => sessions.TryGetValue(id, out var session) && session.GlWindow;
+    public void ShowOwnWindow(Guid id) { var session = Require(id); session.Process.Refresh(); WindowCapture.BringToFront(session.Process.MainWindowHandle); }
     public async Task<VmConfiguration> CreateAsync(VmConfiguration configuration, CancellationToken token = default)
     {
         HostProbe.ValidateAllocation(configuration, host);
@@ -72,7 +77,7 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
             var process = new Process { StartInfo = QemuCommandBuilder.Build(configuration, qemu, host, endpoints) }; var qmp = new QmpClient();
             if (!process.Start()) throw new IOException("QEMU could not start.");
             ProcessLifetime ownership; try { ownership = new ProcessLifetime(process); } catch { if (!process.HasExited) process.Kill(true); process.Dispose(); await qmp.DisposeAsync(); throw; }
-            var session = new Session(process, qmp, endpoints, ownership); sessions[configuration.Id] = session;
+            var session = new Session(process, qmp, endpoints, ownership) { GlWindow = QemuCommandBuilder.UsesGlWindow(configuration, qemu) }; sessions[configuration.Id] = session;
             var stdout = CaptureAsync(configuration.Id, process.StandardOutput, "stdout", session); var stderr = CaptureAsync(configuration.Id, process.StandardError, "stderr", session);
             session.Monitor = MonitorAsync(configuration.Id, session, stdout, stderr);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(15));
@@ -150,6 +155,7 @@ public sealed class QemuBackend(VmStore store, QemuInstallation qemu, HostCapabi
     public async Task<byte[]> ScreenshotAsync(Guid id, CancellationToken token = default)
     {
         var session = Require(id);
+        if (session.GlWindow) { session.Process.Refresh(); return WindowCapture.ClientAreaPng(session.Process.MainWindowHandle); }
         var path = Path.Combine(Path.GetTempPath(), "aviary-screen-" + Guid.NewGuid().ToString("N") + ".png");
         try { await session.Qmp.ExecuteAsync("screendump", new { filename = path, format = "png" }, token); return await File.ReadAllBytesAsync(path, token); }
         finally { if (File.Exists(path)) File.Delete(path); }

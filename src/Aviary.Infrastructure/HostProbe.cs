@@ -23,7 +23,12 @@ public static class HostProbe
         if (host.MemoryMB > 0 && vm.MemoryMB > host.MemoryMB * 0.75) throw new InvalidDataException("Reserve at least 25% of memory for Windows.");
     }
 }
-public sealed record QemuInstallation(string Directory, string Version, IReadOnlyList<GuestArchitecture> Architectures, IReadOnlyList<string>? Accelerators = null, bool VirglAvailable = false);
+// VirglAvailable: 3D inside Aviary's display (egl-headless; Linux hosts). GlWindowAvailable: 3D in QEMU's own SDL
+// window, the only working virgl path on Windows hosts, where egl-headless can't create guest GPU resources.
+public sealed record QemuInstallation(string Directory, string Version, IReadOnlyList<GuestArchitecture> Architectures, IReadOnlyList<string>? Accelerators = null, bool VirglAvailable = false, bool GlWindowAvailable = false)
+{
+    public bool ThreeDAvailable => VirglAvailable || GlWindowAvailable;
+}
 public static class QemuDiscovery
 {
     public static string Executable(GuestArchitecture architecture) => architecture switch { GuestArchitecture.X86_64 => "qemu-system-x86_64.exe", GuestArchitecture.X86 => "qemu-system-i386.exe", GuestArchitecture.Arm64 => "qemu-system-aarch64.exe", GuestArchitecture.RiscV64 => "qemu-system-riscv64.exe", _ => throw new ArgumentOutOfRangeException(nameof(architecture)) };
@@ -39,8 +44,9 @@ public static class QemuDiscovery
             var devices = await ProcessRunner.RunAsync(Path.Combine(dir!, Executable(architectures[0])), ["-device", "help"]);
             // Windows QEMU builds list virtio-vga-gl, but egl-headless cannot back virgl there:
             // resource creation fails and the guest shows "Display output is not active".
-            bool virgl = !OperatingSystem.IsWindows() && devices.Contains("\"virtio-vga-gl\"", StringComparison.Ordinal);
-            return new(Path.GetFullPath(dir!), version.Split('\n')[0].Trim(), architectures, accelerators.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), virgl);
+            bool glDevice = devices.Contains("\"virtio-vga-gl\"", StringComparison.Ordinal);
+            bool sdl = (await ProcessRunner.RunAsync(Path.Combine(dir!, Executable(architectures[0])), ["-display", "help"])).Split('\n').Any(l => l.Trim() == "sdl");
+            return new(Path.GetFullPath(dir!), version.Split('\n')[0].Trim(), architectures, accelerators.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), VirglAvailable: !OperatingSystem.IsWindows() && glDevice, GlWindowAvailable: OperatingSystem.IsWindows() && glDevice && sdl);
         }
         return null;
     }

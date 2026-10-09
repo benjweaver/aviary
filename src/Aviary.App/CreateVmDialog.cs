@@ -55,7 +55,7 @@ public sealed class CreateVmDialog : ContentDialog
         hyperV.IsEnabled = model.HyperV.Available && model.Host.Architecture == "X64";
         virtualize.IsChecked = virtualize.IsEnabled; emulate.IsChecked = !virtualize.IsEnabled && emulate.IsEnabled;
         hyperV.IsChecked = !virtualize.IsEnabled && !emulate.IsEnabled && hyperV.IsEnabled;
-        graphics.IsEnabled = model.Installation?.VirglAvailable == true;
+        graphics.IsEnabled = model.Installation?.ThreeDAvailable == true;
         nativeSwitch.ItemsSource = model.HyperV.Switches; nativeSwitch.SelectedItem = model.HyperV.Switches.FirstOrDefault(s => s == "Default Switch") ?? model.HyperV.Switches.FirstOrDefault();
         cpu = new() { Header = "CPU cores", Minimum = 1, Maximum = Math.Max(1, model.Host.LogicalCpuCount - 1), Value = Math.Min(4, Math.Max(1, model.Host.LogicalCpuCount / 2)), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline };
         ram = new() { Header = "Memory (MB)", Minimum = 256, Maximum = model.Host.MemoryMB > 0 ? Math.Floor(model.Host.MemoryMB * .75) : 4096, Value = Math.Min(4096, Math.Max(256, model.Host.MemoryMB / 4)), SmallChange = 512, LargeChange = 1024, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline };
@@ -65,7 +65,7 @@ public sealed class CreateVmDialog : ContentDialog
         steps.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
         layout.Children.Add(steps); var page = Ui.Stack(progress, heading, subtitle, body, error); Grid.SetColumn(page, 1); layout.Children.Add(page);
         Content = new ScrollViewer { Content = layout, MaxHeight = Math.Max(320, Math.Min(560, xamlRoot.Size.Height - 230)), HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        os.SelectionChanged += (_, _) => { if (name.Text is "Linux" or "Windows" or "Other") name.Text = (string)os.SelectedItem; dynamic.IsOn = os.SelectedIndex == 0; fastNetwork.IsOn = os.SelectedIndex == 0; graphics.IsEnabled = os.SelectedIndex == 0 && model.Installation?.VirglAvailable == true; if (!graphics.IsEnabled) graphics.IsOn = false; };
+        os.SelectionChanged += (_, _) => { if (name.Text is "Linux" or "Windows" or "Other") name.Text = (string)os.SelectedItem; dynamic.IsOn = os.SelectedIndex == 0; fastNetwork.IsOn = os.SelectedIndex == 0; graphics.IsEnabled = os.SelectedIndex == 0 && model.Installation?.ThreeDAvailable == true; if (!graphics.IsEnabled) graphics.IsOn = false; };
         graphics.Toggled += (_, _) => { if (graphics.IsOn) dynamic.IsOn = true; };
         dynamic.Toggled += (_, _) => { if (!dynamic.IsOn) graphics.IsOn = false; };
         PrimaryButtonClick += OnContinue;
@@ -89,7 +89,7 @@ public sealed class CreateVmDialog : ContentDialog
                 body.Children.Add(Ui.Action("Choose ISO…", "\uE8B7", BrowseAsync));
                 body.Children.Add(Ui.Text(Native ? "Generation 2 uses UEFI. Windows guests get Secure Boot and a virtual TPM; Linux guests use Secure Boot off for compatibility." : "Windows 11 requires UEFI and TPM support. Choose Hyper-V to create a guest with those features.", 12, true)); break;
             case 2:
-                body.Children.Add(Ui.Text(GuestRecommendations.For((string)os.SelectedItem, Native ? VmEngine.HyperV : VmEngine.Qemu, model.Host.WhpxAvailable, model.HyperV.Available, model.Installation?.VirglAvailable == true), 13, true));
+                body.Children.Add(Ui.Text(GuestRecommendations.For((string)os.SelectedItem, Native ? VmEngine.HyperV : VmEngine.Qemu, model.Host.WhpxAvailable, model.HyperV.Available, model.Installation?.ThreeDAvailable == true), 13, true));
                 if (os.SelectedIndex == 1 && !Native && model.HyperV.Available) body.Children.Add(Ui.Action("Use recommended Hyper-V", "\uE945", () => { hyperV.IsChecked = true; ShowStep(); return Task.CompletedTask; }));
                 body.Children.Add(cpu); body.Children.Add(ram); body.Children.Add(Ui.Text($"Your PC has {model.Host.LogicalCpuCount} logical CPUs and {Ui.Memory((int)model.Host.MemoryMB)} of memory.", 13, true));
                 body.Children.Add(new Expander { Header = "Advanced hardware", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Ui.Text(Native ? "Architecture: x86-64\nMachine: Hyper-V Generation 2\nFirmware: UEFI" : "Architecture: x86-64\nMachine: PC\nFirmware: BIOS", 13, true) }); break;

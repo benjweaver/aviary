@@ -37,11 +37,14 @@ public static class QemuCommandBuilder
         var info = new ProcessStartInfo(Path.Combine(qemu.Directory, QemuDiscovery.Executable(vm.Architecture))) { WorkingDirectory = Path.GetFullPath(qemu.Directory), UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         void Add(params string[] args) { foreach (var arg in args) info.ArgumentList.Add(arg); }
         // Machines saved with 3D on keep working where virgl is unavailable: they get the 2D adaptive display.
-        bool gl = vm.AcceleratedGraphics && qemu.VirglAvailable;
-        Add("-name", vm.Name, "-machine", "pc", "-accel", vm.Acceleration == Acceleration.Whpx ? "whpx" : "tcg", "-smp", vm.CpuCores.ToString(), "-m", vm.MemoryMB.ToString(), "-display", gl ? "egl-headless" : "none", "-device", "usb-tablet", "-usb");
+        // On Windows hosts 3D runs in QEMU's own SDL window; closing that window must not power the guest off.
+        bool glWindow = UsesGlWindow(vm, qemu), gl = glWindow || vm.AcceleratedGraphics && qemu.VirglAvailable;
+        Add("-name", vm.Name, "-machine", "pc", "-accel", vm.Acceleration == Acceleration.Whpx ? "whpx" : "tcg", "-smp", vm.CpuCores.ToString(), "-m", vm.MemoryMB.ToString(), "-display", glWindow ? "sdl,gl=on,window-close=off" : gl ? "egl-headless" : "none", "-device", "usb-tablet", "-usb");
         // Control and display stay off TCP: user networking lets every guest reach the host's loopback at 10.0.2.2,
         // so a loopback port would hand guests this VM's monitor. QEMU option values escape commas by doubling them.
-        Add("-chardev", $"pipe,id=qmp,path={endpoints.QmpPipe}", "-object", "monitor-qmp,id=qmp-monitor,chardev=qmp", "-vnc", "unix:" + endpoints.VncSocket.Replace(",", ",,"));
+        Add("-chardev", $"pipe,id=qmp,path={endpoints.QmpPipe}", "-object", "monitor-qmp,id=qmp-monitor,chardev=qmp");
+        // A GL window's scanout never reaches VNC, so 3D-window machines have no embedded display.
+        if (!glWindow) Add("-vnc", "unix:" + endpoints.VncSocket.Replace(",", ",,"));
         // JSON blockdev avoids QEMU's comma-delimited filename parsing.
         if (vm.DynamicDisplay) Add("-vga", "none", "-device", gl ? "virtio-vga-gl" : "virtio-vga");
         Add("-blockdev", JsonSerializer.Serialize(new Dictionary<string, object> { ["driver"] = vm.DiskFormat == DiskFormat.Qcow2 ? "qcow2" : "raw", ["node-name"] = "system", ["file"] = new { driver = "file", filename = Path.GetFullPath(vm.DiskPath) } }), "-device", "ide-hd,drive=system,bus=ide.0,unit=0");
@@ -58,6 +61,7 @@ public static class QemuCommandBuilder
         if (vm.NetworkEnabled) Add("-nic", network); else Add("-nic", "none");
         return info;
     }
+    public static bool UsesGlWindow(VmConfiguration vm, QemuInstallation qemu) => vm.AcceleratedGraphics && vm.DynamicDisplay && !qemu.VirglAvailable && qemu.GlWindowAvailable;
     public static string Preview(ProcessStartInfo info) => info.FileName + " " + string.Join(" ", info.ArgumentList.Select(a => "\"" + a.Replace("\"", "\\\"") + "\""));
 }
 

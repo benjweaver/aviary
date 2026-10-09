@@ -191,6 +191,15 @@ public sealed partial class MainWindow : Window
     async Task OpenDisplay(VmConfiguration vm)
     {
         if (vm.Engine == VmEngine.HyperV) { await model.Backend!.OpenNativeConsoleAsync(vm.Id); return; }
+        if (model.Backend!.UsesOwnWindow(vm.Id))
+        {
+            // 3D machines draw in QEMU's own window, which can take a moment to appear after starting.
+            for (int attempt = 0; ; attempt++)
+            {
+                try { model.Backend.ShowOwnWindow(vm.Id); return; }
+                catch (InvalidOperationException) when (attempt < 25) { await Task.Delay(200); }
+            }
+        }
         if (displays.TryGetValue(vm.Id, out var existing)) { existing.Activate(); return; }
         var window = new DisplayWindow(vm.Name, vm.DynamicDisplay, () => model.Backend!.StopAsync(vm.Id), paths => SendFilesAsync(vm, paths)); displays[vm.Id] = window;
         window.Closed += (_, _) => displays.Remove(vm.Id);

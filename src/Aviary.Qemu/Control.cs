@@ -74,8 +74,11 @@ public sealed class ControlService(IMachineLibrary library)
         if (force) await library.Backend.ForceStopAsync(vm.Id, token); else await library.Backend.StopAsync(vm.Id, token);
         return Describe(vm);
     }
+    // Any live state: seeing the screen matters most when a machine is starting, paused or stuck shutting down.
     async Task<object> ScreenshotAsync(VmConfiguration vm, CancellationToken token) =>
-        new { PngBase64 = Convert.ToBase64String(await library.Backend.ScreenshotAsync(Running(vm).Id, token)) };
+        library.Backend.GetStatus(vm.Id).Status is VmStatus.Stopped or VmStatus.Error
+            ? throw new InvalidOperationException($"{vm.Name} isn't running. Start it first.")
+            : new { PngBase64 = Convert.ToBase64String(await library.Backend.ScreenshotAsync(vm.Id, token)) };
     async Task<object> PressAsync(VmConfiguration vm, JsonElement args, CancellationToken token)
     {
         var combos = args.TryGetProperty("keys", out var keys) && keys.ValueKind == JsonValueKind.Array ? keys.EnumerateArray().Select(k => k.GetString()!).ToArray() : [String(args, "keys")];
