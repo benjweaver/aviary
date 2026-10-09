@@ -39,7 +39,10 @@ public static class QemuCommandBuilder
         // Machines saved with 3D on keep working where virgl is unavailable: they get the 2D adaptive display.
         // On Windows hosts 3D runs in QEMU's own SDL window; closing that window must not power the guest off.
         bool glWindow = UsesGlWindow(vm, qemu), gl = glWindow || vm.AcceleratedGraphics && qemu.VirglAvailable;
-        Add("-name", vm.Name, "-machine", "pc", "-accel", vm.Acceleration == Acceleration.Whpx ? "whpx" : "tcg", "-smp", vm.CpuCores.ToString(), "-m", vm.MemoryMB.ToString(), "-display", glWindow ? "sdl,gl=on,window-close=off" : gl ? "egl-headless" : "none", "-device", "usb-tablet", "-usb");
+        Add("-name", vm.Name, "-machine", "pc", "-accel", vm.Acceleration == Acceleration.Whpx ? "whpx" : "tcg",
+            // QEMU's default qemu64 CPU lacks SSE4.2 and POPCNT, which Windows 11 24H2 and later need to boot. Under WHPX
+            // "host" and "max" triple-fault (firmware or Windows boot), so use a named model; missing host features are dropped.
+            "-cpu", "Skylake-Client-v4", "-smp", vm.CpuCores.ToString(), "-m", vm.MemoryMB.ToString(), "-display", glWindow ? "sdl,gl=on,window-close=off" : gl ? "egl-headless" : "none", "-device", "usb-tablet", "-usb");
         // Control and display stay off TCP: user networking lets every guest reach the host's loopback at 10.0.2.2,
         // so a loopback port would hand guests this VM's monitor. QEMU option values escape commas by doubling them.
         Add("-chardev", $"pipe,id=qmp,path={endpoints.QmpPipe}", "-object", "monitor-qmp,id=qmp-monitor,chardev=qmp");
