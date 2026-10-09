@@ -10,6 +10,29 @@ namespace Aviary.App;
 
 public sealed partial class MainWindow
 {
+    // Details redraw on every state change, so the host adapter check is cached briefly.
+    Task<IReadOnlyList<string>>? rscCheck; DateTime rscCheckedAt;
+    InfoBar RscWarning()
+    {
+        var copy = new Button { Content = "Copy command" };
+        var bar = new InfoBar { IsOpen = false, IsClosable = true, Severity = InfoBarSeverity.Warning, Title = "Downloads in this machine may be very slow", ActionButton = copy };
+        if (rscCheck is null || DateTime.UtcNow - rscCheckedAt > TimeSpan.FromMinutes(1)) { rscCheck = HostNetworkCheck.AdaptersWithRscAsync(); rscCheckedAt = DateTime.UtcNow; }
+        var check = rscCheck;
+        _ = Task.Run(async () =>
+        {
+            var adapters = await check;
+            if (adapters.Count == 0) return;
+            var command = HostNetworkCheck.FixCommand(adapters);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                bar.Message = $"Receive Segment Coalescing is on for this PC's {string.Join(", ", adapters)} adapter. With some network cards, Hyper-V guests then download at a few KB/s. If that happens, run this in an administrator PowerShell on this PC (not in the guest): {command}";
+                copy.Click += (_, _) => { var data = new Windows.ApplicationModel.DataTransfer.DataPackage(); data.SetText(command); Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data); };
+                bar.IsOpen = true;
+            });
+        });
+        return bar;
+    }
+
     void ShowDetails(VmConfiguration vm)
     {
         selected = vm.Id; previewTargets.Clear(); var state = State(vm);
@@ -20,6 +43,7 @@ public sealed partial class MainWindow
         var commands = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center }; commands.Children.Add(PrimaryAction(vm));
         var more = new Button { Content = Ui.Icon("\uE712"), Flyout = MachineMenu(vm), Padding = new Thickness(12) }; Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, "More actions for " + vm.Name); commands.Children.Add(more); Grid.SetColumn(commands, 2); header.Children.Add(commands); stack.Children.Add(header);
         if (state.Error is not null) stack.Children.Add(new InfoBar { IsOpen = true, IsClosable = false, Severity = InfoBarSeverity.Error, Title = "The machine needs attention", Message = state.Error });
+        if (vm.Engine == VmEngine.HyperV && vm.NetworkEnabled) stack.Children.Add(RscWarning());
         var columns = new Grid { ColumnSpacing = 20, RowSpacing = 20 }; columns.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) }); columns.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); columns.RowDefinitions.Add(new() { Height = GridLength.Auto }); columns.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var screen = Ui.Stack(Preview(vm, 330), Ui.Status(state.Status), Ui.Text(vm.Engine == VmEngine.HyperV ? "Hyper-V opens in a separate Windows guest window." : previews.ContainsKey(vm.Id) ? "Last display preview from this session" : "Your desktop will appear here after you open the display.", 12, true)); var previewCard = Ui.Card(screen, 18); columns.Children.Add(previewCard);
         var summary = Ui.Stack(Ui.Heading("Configuration", 18), DetailRow("Processor", $"{vm.CpuCores} virtual CPUs"), DetailRow("Memory", Ui.Memory(vm.MemoryMB)), DetailRow("Storage", $"{vm.DiskGB} GB · {vm.DiskFormat}"), DetailRow("Engine", vm.Engine == VmEngine.HyperV ? "Hyper-V · Generation 2" : vm.Acceleration == Acceleration.Whpx ? "QEMU · WHPX" : "QEMU · TCG"), DetailRow("Display", vm.Engine == VmEngine.HyperV ? "Windows VMConnect" : vm.AcceleratedGraphics ? "3D · VirtIO (experimental)" : vm.DynamicDisplay ? "Adaptive · VirtIO" : "Compatibility · VGA"), DetailRow("Network", vm.NetworkEnabled ? vm.Engine == VmEngine.HyperV ? vm.HyperVSwitch : vm.AcceleratedNetwork ? "VirtIO · shared connection" : "Compatibility · shared connection" : "Disconnected"));
