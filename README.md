@@ -170,7 +170,7 @@ Actual WinUI rendering with synthetic library entries used for layout review:
 ## Current limitations
 
 - Import, clone, snapshots, permanent deletion, hotplug and disk resizing are not implemented. The backend contract exposes working operations only.
-- QEMU UEFI/TPM, ARM64/RISC-V profiles, guest tools, sharing, clipboard, audio, USB passthrough are unavailable. Guest 3D (VirGL) is unavailable on Windows hosts (see below). QEMU Windows guest 3D is not implemented. Hyper-V GPU-P setup is not included in release builds (see below). Hyper-V provides UEFI/TPM and uses VMConnect for guest integration.
+- QEMU UEFI/TPM, ARM64/RISC-V profiles, guest tools, sharing, clipboard, audio, USB passthrough are unavailable. Guest 3D (VirGL) is unavailable on Windows hosts (see below). QEMU Windows guest 3D is not implemented. Hyper-V Windows guests can use GPU partitioning (experimental, see below). Hyper-V provides UEFI/TPM and uses VMConnect for guest integration.
 - Display uses uncompressed RFB and basic US keyboard mapping. Windows-reserved shortcuts stay with the host; no exclusive keyboard hook.
 - QEMU control and display never listen on TCP. QEMU user networking maps every guest's `10.0.2.2` to the host's `127.0.0.1`, so a loopback port would let guests drive their own or other VMs. QMP uses a randomly named Windows named pipe that Aviary only accepts from a server running as the same user, and the display uses an AF_UNIX socket in `%USERPROFILE%\.aviary\run`, which is restricted to your account. Neither has a password, so other processes running as you can still reach them. The guest SSH broker deliberately listens on loopback for guests to dial in; it serves only one-time setup tokens and pairs SSH sessions whose host keys Aviary pins.
 - No external VM adoption. QEMU guests cannot survive application exit. Native Hyper-V guests are managed by Windows and do survive it.
@@ -237,7 +237,7 @@ Aviary generates each guest's SSH host key and pins it, so there's no first-conn
 
 ## MCP server for AI tools
 
-`aviary-mcp.exe` ships beside `Aviary.App.exe`. It is a stdio [MCP](https://modelcontextprotocol.io) server that lets Claude Code, Codex and other MCP clients use your machines: `list_machines`, `start_machine`, `stop_machine`, `screenshot` (returned as an image), `type_text`, `press_keys`, `setup_ssh`, `run_command`, `put_file` and `get_file`. It forwards each call to the running Aviary app over a named pipe that only your Windows account can open, and starts Aviary if it isn't running.
+`aviary-mcp.exe` ships beside `Aviary.App.exe`. It is a stdio [MCP](https://modelcontextprotocol.io) server that lets Claude Code, Codex and other MCP clients use your machines: `list_machines`, `start_machine`, `stop_machine`, `screenshot` (returned as an image), `type_text`, `press_keys`, `setup_ssh`, `run_command`, `set_gpu_partition`, `put_file` and `get_file`. It forwards each call to the running Aviary app over a named pipe that only your Windows account can open, and starts Aviary if it isn't running.
 
 ```powershell
 claude mcp add aviary -- "$env:LOCALAPPDATA\Programs\Aviary\aviary-mcp.exe"
@@ -247,10 +247,8 @@ Typing and screenshots work without any guest setup; shell commands and file cop
 
 ### Experimental Hyper-V GPU sharing
 
-Not included in release builds. It is unverified in a real guest, so the button and helper are compiled out by default. To try it, build with `dotnet build -p:EnableGpuPartition=true` (or pass the same property to publish). The helper source is `packaging/windows/setup-hyperv-gpu.ps1`; its tests run in every build.
+Windows Hyper-V guests can use a partition of this PC's GPU. Set up SSH access first, start the VM, then open **GPU sharing (experimental)** on its page (or call the `set_gpu_partition` MCP tool). Aviary copies the host GPU driver into the guest (a few GB, staged in `C:\ProgramData\Aviary` and moved into `System32\HostDriverStore` over SSH), shuts the guest down, attaches a partition of the first partitionable GPU and starts it again. Verified with an RTX 3080: the guest lists the GPU in Device Manager and `nvidia-smi` works.
 
-For an installed Windows Hyper-V guest, open **GPU sharing (experimental)**. The interactive elevated helper verifies Aviary ownership, lets you choose among partitionable GPUs, and requests a guest administrator password through PowerShell Direct. It requires matching host/guest Windows build numbers, copies the matching host GPU driver files, requests graceful shutdown, records original VM memory settings in protected `%ProgramData%\Aviary\GpuRecovery`, and attaches a GPU partition using Windows defaults. It never changes the host-wide partition count, disables the basic display, or force-powers off the guest.
-
-Undo removes the assignment and restores VM settings; copied guest drivers remain. Repeat setup after host driver updates. The helper checks recovery ownership and rolls back hardware settings if assignment/start fails while the VM is off. Driver copying and actual 3D acceleration still require testing inside a real installed guest. Check Device Manager, dxdiag and a 3D application; VMConnect is not a GPU streaming solution.
+Nothing on the host changes: not the host GPU, its driver or the host-wide partition count. The guest only uses the GPU while it runs; shut it down and host games get the whole GPU back. While a partition is attached, checkpoints are off and the VM turns off rather than saving state when the host shuts down. Turning GPU sharing off removes the partition and restores the VM settings saved when it was attached (the copied driver files stay in the guest). After updating the GPU driver on this PC, turn GPU sharing off and on again so the guest's copy matches.
 
 Desktop Windows / consumer GPU-P is outside Microsoft's supported configurations: [Microsoft support guidance](https://learn.microsoft.com/en-us/troubleshoot/windows-server/virtualization/troubleshoot-hyper-v-gpu-assignment-partitioning-passthrough-issues). GPU enumeration or a running VM is not confirmation of working acceleration.
