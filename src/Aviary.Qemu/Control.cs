@@ -31,6 +31,7 @@ public sealed class ControlService(IMachineLibrary library)
         "press_keys" => PressAsync(Running(Find(args)), args, token),
         "setup_ssh" => SetupSshAsync(Find(args), Bool(args, "type"), !(args.TryGetProperty("keep_unlocked", out var k) && k.ValueKind == JsonValueKind.False), Int(args, "wait_seconds", 120), token),
         "run_command" => RunAsync(Find(args), String(args, "command"), Int(args, "timeout_seconds", 120), token),
+        "set_gpu_partition" => SetGpuAsync(Find(args), Bool(args, "enable"), token),
         "put_file" => args.TryGetProperty("remote_path", out var remote) && remote.ValueKind == JsonValueKind.String && remote.GetString()!.Length > 0
             ? CopyAsync(Find(args), String(args, "local_path"), String(args, "remote_path"), upload: true, token)
             : PutInDownloadsAsync(Find(args), String(args, "local_path"), token),
@@ -151,6 +152,12 @@ public sealed class ControlService(IMachineLibrary library)
     {
         if (!Path.IsPathFullyQualified(localPath)) throw new ArgumentException("local_path must be an absolute path on this PC.");
         return new { ok = true, Guest_folder = await SendFilesAsync(vm, [localPath], token) };
+    }
+
+    async Task<object> SetGpuAsync(VmConfiguration vm, bool enable, CancellationToken token)
+    {
+        await library.Backend.SetGpuPartitionAsync(vm, enable, null, token);
+        return new { ok = true, Gpu_partition = await library.Backend.HasGpuPartitionAsync(vm.Id, token), Status = library.Backend.GetStatus(vm.Id).Status.ToString() };
     }
 
     // Files dropped on a machine in Aviary land in the guest's Downloads folder. Hyper-V copies over VMBus (no

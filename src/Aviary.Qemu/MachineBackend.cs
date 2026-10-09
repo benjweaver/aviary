@@ -42,6 +42,9 @@ public sealed class MachineBackend(QemuBackend? qemu, HyperVBackend? hyperV, IEn
             : throw new NotSupportedException("Automatic sign-in for Windows guests on QEMU is set during installation (local-account setup).");
     public Task<string> SendFilesOverVmBusAsync(VmConfiguration vm, string guestUser, IReadOnlyList<string> paths, CancellationToken token = default) => HyperV(vm.Id).SendFilesAsync(vm.Id, guestUser, paths, token);
     public bool IsHyperVMachine(Guid id) => IsHyperV(id);
+    public Task<bool> HasGpuPartitionAsync(Guid id, CancellationToken token = default) => IsHyperV(id) ? HyperV(id).HasGpuPartitionAsync(id, token) : Task.FromResult(false);
+    public Task SetGpuPartitionAsync(VmConfiguration vm, bool enable, IProgress<string>? progress = null, CancellationToken token = default) =>
+        IsHyperV(vm.Id) ? HyperV(vm.Id).SetGpuPartitionAsync(vm, enable, progress, token) : throw new NotSupportedException("GPU partitioning is a Hyper-V feature. QEMU guests use 3D graphics instead (Linux).");
     public bool UsesOwnWindow(Guid id) => !IsHyperV(id) && qemu?.UsesOwnWindow(id) == true;
     public void ShowOwnWindow(Guid id) => Qemu(id).ShowOwnWindow(id);
     public void EnableSsh(VmConfiguration vm) { if (!IsHyperV(vm.Id)) qemu?.EnableSsh(vm); }

@@ -202,6 +202,53 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
         return target;
     }
 
+    // GPU partitioning for a Windows guest. Turning it on copies the host's GPU driver into the running guest, shuts it
+    // down, attaches a partition of the host GPU and starts it again. Turning it off removes the partition and restores
+    // the VM settings saved when it was attached. The host GPU and its driver aren't changed either way.
+    public async Task<bool> HasGpuPartitionAsync(Guid id, CancellationToken token = default) =>
+        int.Parse(await commands.RunAsync(HyperVScripts.GpuAdapterCount, Identity(Require(id)), token)) > 0;
+
+    public async Task SetGpuPartitionAsync(VmConfiguration configuration, bool enable, IProgress<string>? progress = null, CancellationToken token = default)
+    {
+        var vm = Require(configuration.Id);
+        if (vm.OperatingSystem != "Windows") throw new NotSupportedException("GPU partitioning in Aviary is for Windows guests.");
+        var record = Path.Combine(store.DirectoryFor(vm.Id), "gpu-partition.json");
+        var forever = TimeSpan.FromMinutes(45);
+        if (enable)
+        {
+            if (await HasGpuPartitionAsync(vm.Id, token)) return;
+            using (var gpus = JsonDocument.Parse(await commands.RunAsync(HyperVScripts.PartitionableGpus, new { }, token)))
+            {
+                var instance = gpus.RootElement.EnumerateArray().Select(g => g.GetString()!).FirstOrDefault() ?? throw new InvalidOperationException("Windows doesn't offer a GPU for partitioning on this PC. Check that the GPU driver is up to date.");
+                if (GetStatus(vm.Id).Status != VmStatus.Running) throw new InvalidOperationException("Start the machine and let Windows finish booting first: the GPU driver is copied into the running guest.");
+                if (configuration.SshUser.Length == 0) throw new InvalidOperationException("Set up SSH access for this machine first: Aviary installs the GPU driver files in the guest over SSH.");
+                var directory = store.DirectoryFor(vm.Id);
+                progress?.Report("Copying the host GPU driver into the guest (a few GB; this takes a few minutes)…");
+                await commands.RunLongAsync(HyperVScripts.GpuDriverCopy, new { vm.Id, vm.HyperVId, InstancePath = instance, Staging = HyperVScripts.GpuStagingRoot }, forever, token);
+                progress?.Report("Installing the driver files in the guest…");
+                await GuestSsh.WriteConfigAsync(configuration, directory, await GuestAddressAsync(vm.Id, token), 22);
+                await GuestSsh.RunAsync(directory, "powershell -NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(HyperVScripts.GpuStagingInstall)), token);
+                progress?.Report("Shutting down the guest…");
+                await commands.RunLongAsync(HyperVScripts.ShutdownAndWait, Identity(vm), TimeSpan.FromMinutes(5), token);
+                progress?.Report("Attaching the GPU partition…");
+                var before = await commands.RunAsync(HyperVScripts.GpuAttach, new { vm.Id, vm.HyperVId, InstancePath = instance }, token);
+                await File.WriteAllTextAsync(record, before, token);
+            }
+        }
+        else
+        {
+            progress?.Report("Shutting down the guest…");
+            await commands.RunLongAsync(HyperVScripts.ShutdownAndWait, Identity(vm), TimeSpan.FromMinutes(5), token);
+            progress?.Report("Removing the GPU partition…");
+            object? before = File.Exists(record) ? JsonSerializer.Deserialize<JsonElement>(await File.ReadAllTextAsync(record, token)) : null;
+            await commands.RunAsync(HyperVScripts.GpuDetach, new { vm.Id, vm.HyperVId, Before = before }, token);
+            File.Delete(record);
+        }
+        progress?.Report("Starting the guest…");
+        await StartAsync(configuration, token);
+        await RefreshAsync();
+    }
+
     public Task TypeTextAsync(Guid id, string text, CancellationToken token = default) => KeyboardAsync(id, HyperVKeyboard.Text(text).ToArray(), token);
     public Task PressKeysAsync(Guid id, string combo, CancellationToken token = default) => KeyboardAsync(id, [HyperVKeyboard.Chord(combo)], token);
     async Task KeyboardAsync(Guid id, HyperVKeyboard.Step[] steps, CancellationToken token)

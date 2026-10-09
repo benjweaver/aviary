@@ -52,9 +52,7 @@ public sealed partial class MainWindow
         stack.Children.Add(columns);
         stack.Children.Add(Ui.Card(Ui.Stack(Ui.Heading("Recommended setup", 18), Ui.Text(GuestRecommendations.For(vm.OperatingSystem, vm.Engine, model.Host.WhpxAvailable, model.HyperV.Available, model.Installation?.ThreeDAvailable == true), 13, true))));
         stack.Children.Add(Action("SSH access", "\uE756", () => SshAccessAsync(vm)));
-#if AVIARY_GPU_PARTITION
-        if (vm.Engine == VmEngine.HyperV && vm.OperatingSystem == "Windows") stack.Children.Add(Action("GPU sharing (experimental)", "\uE7F4", () => GpuSetupAsync(vm)));
-#endif
+        if (vm.Engine == VmEngine.HyperV && vm.OperatingSystem == "Windows") stack.Children.Add(Action("GPU sharing (experimental)", "\uE7F4", () => GpuSharingAsync(vm)));
         if (vm.SetupIsoPath.Length > 0) stack.Children.Add(Ui.Text("Setup CD attached. Run the guest SSH setup script if enabled. After Windows installation, shut down and choose Eject and remove setup CD to remove its saved account password.", 12, true));
         if (state.Status == VmStatus.Stopped || state.Status == VmStatus.Error && vm.Engine == VmEngine.Qemu) stack.Children.Add(Action("Edit configuration", "\uE70F", () => EditAsync(vm)));
         var input = vm.Engine == VmEngine.HyperV

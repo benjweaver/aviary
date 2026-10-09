@@ -87,35 +87,42 @@ public sealed partial class MainWindow
         await new ContentDialog { XamlRoot = root.XamlRoot, Title = "SSH access · " + vm.Name, Content = new ScrollViewer { Content = panel, MaxHeight = 560 }, CloseButtonText = "Close" }.ShowAsync();
         ShowDetails(current);
     }
-#if AVIARY_GPU_PARTITION
-    // Experimental Hyper-V GPU-P; excluded from release builds until validated in a real guest.
-    async Task GpuSetupAsync(VmConfiguration vm)
+    // GPU partitioning: shares the host GPU with a Hyper-V Windows guest while it runs. The host GPU and driver are untouched.
+    async Task GpuSharingAsync(VmConfiguration vm)
     {
-        if (vm.HyperVId is null) throw new InvalidOperationException("This machine is not registered with Hyper-V.");
+        var backend = model.Backend ?? throw new InvalidOperationException("Hyper-V is unavailable.");
+        bool attached = await backend.HasGpuPartitionAsync(vm.Id);
+        var status = Ui.Text(attached ? "This machine has a partition of this PC's GPU." : "This machine uses Hyper-V's basic display adapter.", 13, true);
+        var progress = new ProgressRing { IsActive = false, Width = 24, Height = 24, HorizontalAlignment = HorizontalAlignment.Left };
+        var error = new InfoBar { IsOpen = false, Severity = InfoBarSeverity.Error, IsClosable = true };
         var dialog = new ContentDialog
         {
-            XamlRoot = root.XamlRoot, Title = "Hyper-V GPU sharing (experimental)",
-            Content = Ui.Stack(
-                Ui.Text("Use a partition of your host GPU in an installed Windows guest. Requires a GPU exposed by Windows for partitioning, matching host and guest Windows builds, and a guest administrator password. Consumer GPUs on desktop Windows are experimental and are not a Microsoft-supported GPU-P configuration.", 14, true),
-                Ui.Text("Start the guest and save your work first. Setup asks for administrator access, copies the matching host graphics driver into the guest, shuts it down normally, adds a GPU partition, and restarts it. Your guest password is not saved.", 13, true),
-                Ui.Text("After setup, check the GPU in Device Manager and dxdiag, then test a 3D app. VMConnect stays available; smooth GPU-backed desktop streaming may need separate guest software. Aviary does not report graphics as verified just because a partition was attached.", 13, true),
-                Ui.Text("Undo removes Aviary's GPU assignment and restores the previous VM memory settings. Copied guest driver files remain. Repeat setup after host GPU driver updates.", 12, true)),
-            PrimaryButtonText = "Set up GPU…", SecondaryButtonText = "Undo GPU setup…", CloseButtonText = "Close"
+            XamlRoot = root.XamlRoot, Title = "GPU sharing (experimental) · " + vm.Name,
+            Content = Ui.Stack(status,
+                Ui.Text("Gives this Windows guest a share of this PC's GPU for DirectX, OpenGL, Vulkan and CUDA. This PC keeps its GPU: your games and its driver aren't changed. The guest only uses the GPU while it's running, sharing it with whatever this PC is doing.", 13, true),
+                Ui.Text("Set up SSH access first. Turning it on copies this PC's GPU driver into the guest (a few GB), restarts the guest and attaches the partition. Checkpoints and saved state are turned off for this machine while it has a GPU. After updating the GPU driver on this PC, turn GPU sharing off and on again to refresh the guest's copy.", 12, true),
+                Ui.Text("Consumer GPUs aren't a configuration Microsoft supports for this, so expect rough edges. Turning it off removes the partition and restores the machine's previous settings.", 12, true),
+                progress, error),
+            PrimaryButtonText = attached ? "" : "Turn on", SecondaryButtonText = attached ? "Turn off" : "", CloseButtonText = "Close",
         };
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.None) return;
-        string script = Path.Combine(AppContext.BaseDirectory, "Tools", "setup-hyperv-gpu.ps1");
-        if (!File.Exists(script)) throw new FileNotFoundException("GPU setup helper is missing.", script);
-        string mode = result == ContentDialogResult.Primary ? "Setup" : "Remove";
-        var start = new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+        async void Apply(ContentDialogButtonClickEventArgs e, bool enable)
         {
-            UseShellExecute = true, Verb = "runas",
-            Arguments = $"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{script}\" -VmId {vm.HyperVId.Value:D} -AviaryId {vm.Id:D} -Mode {mode}"
-        };
-        // A visible console is intentional: this user-invoked helper collects guest credentials.
-        using var process = System.Diagnostics.Process.Start(start);
+            e.Cancel = true; var deferral = e.GetDeferral();
+            dialog.IsPrimaryButtonEnabled = dialog.IsSecondaryButtonEnabled = false; progress.IsActive = true; error.IsOpen = false;
+            try
+            {
+                await backend.SetGpuPartitionAsync(model.Machines.First(m => m.Id == vm.Id), enable, new Progress<string>(text => status.Text = text));
+                status.Text = enable ? "Done. The guest is starting with a partition of this PC's GPU. Check Device Manager or run nvidia-smi in the guest." : "Done. The GPU partition is removed and the guest is starting with the basic display adapter.";
+                dialog.PrimaryButtonText = enable ? "" : "Turn on"; dialog.SecondaryButtonText = enable ? "Turn off" : "";
+            }
+            catch (Exception ex) { error.Message = ex.Message; error.IsOpen = true; }
+            finally { progress.IsActive = false; dialog.IsPrimaryButtonEnabled = dialog.IsSecondaryButtonEnabled = true; deferral.Complete(); }
+        }
+        dialog.PrimaryButtonClick += (_, e) => Apply(e, true);
+        dialog.SecondaryButtonClick += (_, e) => Apply(e, false);
+        await dialog.ShowAsync();
+        ShowDetails(model.Machines.First(m => m.Id == vm.Id));
     }
-#endif
     // The password goes straight to the guest over PowerShell Direct; Aviary doesn't store it.
     async Task AutoSignInAsync(VmConfiguration vm)
     {

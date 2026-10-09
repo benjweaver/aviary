@@ -28,7 +28,7 @@ public sealed class McpTests
 
         var tools = (await Call(aviary, """{"jsonrpc":"2.0","id":2,"method":"tools/list"}"""))["result"]!["tools"]!.AsArray();
         var names = tools.Select(t => t!["name"]!.GetValue<string>()).ToArray();
-        Assert.Equal(["list_machines", "start_machine", "stop_machine", "screenshot", "type_text", "press_keys", "setup_ssh", "run_command", "put_file", "get_file"], names);
+        Assert.Equal(["list_machines", "start_machine", "stop_machine", "screenshot", "type_text", "press_keys", "setup_ssh", "run_command", "set_gpu_partition", "put_file", "get_file"], names);
         Assert.All(tools, t => Assert.Equal("object", t!["inputSchema"]!["type"]!.GetValue<string>()));
         Assert.Empty(aviary.Calls); // listing tools doesn't need the app
     }

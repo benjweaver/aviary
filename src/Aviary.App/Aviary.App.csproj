@@ -7,7 +7,4 @@
   <ItemGroup><WinUiPublishResource Include="$(TargetDir)$(AssemblyName).pri;$(TargetDir)App.xbf" /></ItemGroup>
   <Copy SourceFiles="@(WinUiPublishResource)" DestinationFolder="$(PublishDir)" />
  </Target>
- <!-- Experimental Hyper-V GPU partitioning: build with -p:EnableGpuPartition=true to include it. -->
- <PropertyGroup Condition="'$(EnableGpuPartition)' == 'true'"><DefineConstants>$(DefineConstants);AVIARY_GPU_PARTITION</DefineConstants></PropertyGroup>
- <ItemGroup Condition="'$(EnableGpuPartition)' == 'true'"><Content Include="../../packaging/windows/setup-hyperv-gpu.ps1" Link="Tools/setup-hyperv-gpu.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
 </Project>

@@ -9,6 +9,8 @@ public interface IHyperVCommands
     Task<string> RunAsync(string script, object arguments, CancellationToken token = default);
     // The secret reaches the script on stdin as $secret, never on a command line other processes can read.
     Task<string> RunWithSecretAsync(string script, object arguments, string secret, CancellationToken token = default) => throw new NotSupportedException();
+    // For long operations such as copying a GPU driver into a guest; the default limit is two minutes.
+    Task<string> RunLongAsync(string script, object arguments, TimeSpan limit, CancellationToken token = default) => RunAsync(script, arguments, token);
 }
 
 public sealed class HyperVCommands : IHyperVCommands
@@ -24,14 +26,15 @@ public sealed class HyperVCommands : IHyperVCommands
         foreach (var arg in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapped)) }) info.ArgumentList.Add(arg);
         return info;
     }
-    public Task<string> RunAsync(string script, object arguments, CancellationToken token = default) => RunCoreAsync(script, arguments, null, token);
-    public Task<string> RunWithSecretAsync(string script, object arguments, string secret, CancellationToken token = default) => RunCoreAsync(script, arguments, secret, token);
-    async Task<string> RunCoreAsync(string script, object arguments, string? secret, CancellationToken token)
+    public Task<string> RunAsync(string script, object arguments, CancellationToken token = default) => RunCoreAsync(script, arguments, null, TimeSpan.FromMinutes(2), token);
+    public Task<string> RunWithSecretAsync(string script, object arguments, string secret, CancellationToken token = default) => RunCoreAsync(script, arguments, secret, TimeSpan.FromMinutes(2), token);
+    public Task<string> RunLongAsync(string script, object arguments, TimeSpan limit, CancellationToken token = default) => RunCoreAsync(script, arguments, null, limit, token);
+    async Task<string> RunCoreAsync(string script, object arguments, string? secret, TimeSpan limit, CancellationToken token)
     {
         using var process = Process.Start(Build(script, arguments, secret is not null)) ?? throw new IOException("Windows PowerShell could not start.");
         if (secret is not null) { await process.StandardInput.WriteLineAsync(secret); process.StandardInput.Close(); }
         var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(limit);
         try { await process.WaitForExitAsync(timeout.Token); }
         catch { if (!process.HasExited) process.Kill(true); throw; }
         var stderr = await error; var stdout = await output;
@@ -218,6 +221,88 @@ public static class HyperVScripts
                 }
             }
         } finally { Remove-PSSession $session }
+        """;
+    // GPU partitioning (GPU-P). The host GPU and its driver are left alone; the partition belongs to this VM's
+    // settings and only uses the GPU while the VM runs. Windows guests need the host's driver files: package folders go
+    // to System32\HostDriverStore, other files (System32/SysWOW64) to the same path. Hyper-V's file copy can't write
+    // into the guest's System32, so files land in a staging folder that the guest moves into place (GpuStagingInstall).
+    public const string PartitionableGpus = """
+        Import-Module Hyper-V
+        ConvertTo-Json -Compress -InputObject @(Get-VMHostPartitionableGpu | ForEach-Object { $_.Name })
+        """;
+    public const string GpuDriverCopy = Require + """
+
+        $device = $p.InstancePath.Substring(4).Split('{')[0].TrimEnd('#').Replace('#', '\')
+        $links = @(Get-CimInstance Win32_PNPSignedDriverCIMDataFile | Where-Object { $_.Antecedent.DeviceID -eq $device })
+        if (!$links.Count) { throw 'Could not find the host GPU driver''s files.' }
+        $store = [IO.Path]::GetFullPath("$env:windir\System32\DriverStore\FileRepository") + '\'
+        $windows = [IO.Path]::GetFullPath($env:windir).TrimEnd('\') + '\'
+        $packages = @{}; $loose = @{}
+        foreach ($link in $links) {
+            $file = [IO.Path]::GetFullPath($link.Dependent.Name)
+            if ($file.StartsWith($store, [StringComparison]::OrdinalIgnoreCase)) { $packages[$file.Substring($store.Length).Split('\')[0]] = $true }
+            elseif ($file.StartsWith($windows, [StringComparison]::OrdinalIgnoreCase)) { $loose[$file] = $true }
+        }
+        $copied = 0; $bytes = 0
+        foreach ($package in $packages.Keys) {
+            $root = Join-Path $store $package
+            foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File) {
+                $target = $p.Staging + '\HostDriverStore\FileRepository\' + $package + $file.FullName.Substring($root.Length)
+                Copy-VMFile -VM $vm -SourcePath $file.FullName -DestinationPath $target -CreateFullPath -FileSource Host -Force
+                $copied++; $bytes += $file.Length
+            }
+        }
+        foreach ($file in $loose.Keys) {
+            if (!(Test-Path -LiteralPath $file)) { continue }
+            Copy-VMFile -VM $vm -SourcePath $file -DestinationPath ($p.Staging + '\Windows\' + $file.Substring($windows.Length)) -CreateFullPath -FileSource Host -Force
+            $copied++; $bytes += (Get-Item -LiteralPath $file).Length
+        }
+        [pscustomobject]@{ Files = $copied; Bytes = $bytes; Packages = @($packages.Keys) } | ConvertTo-Json -Compress
+        """;
+    // VM must be off. Returns the settings it changes so detaching can restore them. GPU-P VMs can't be saved or
+    // checkpointed, so checkpoints are turned off and host shutdown turns the VM off instead of saving it.
+    public const string GpuAttach = Require + """
+
+        if ($vm.State -ne 'Off') { throw 'Shut down the machine first.' }
+        if (@(Get-VMGpuPartitionAdapter -VM $vm).Count) { throw 'This machine already has a GPU partition.' }
+        $before = [pscustomobject]@{
+            Cache = [bool]$vm.GuestControlledCacheTypes; Low = [uint64]$vm.LowMemoryMappedIoSpace; High = [uint64]$vm.HighMemoryMappedIoSpace
+            StopAction = $vm.AutomaticStopAction.ToString(); CheckpointType = $vm.CheckpointType.ToString(); AutomaticCheckpoints = [bool]$vm.AutomaticCheckpointsEnabled
+        }
+        Set-VM -VM $vm -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB -AutomaticStopAction TurnOff -CheckpointType Disabled -AutomaticCheckpointsEnabled $false
+        try { Add-VMGpuPartitionAdapter -VM $vm -InstancePath $p.InstancePath }
+        catch {
+            Set-VM -VM $vm -GuestControlledCacheTypes $before.Cache -LowMemoryMappedIoSpace $before.Low -HighMemoryMappedIoSpace $before.High -AutomaticStopAction $before.StopAction -CheckpointType $before.CheckpointType -AutomaticCheckpointsEnabled $before.AutomaticCheckpoints
+            throw
+        }
+        $before | ConvertTo-Json -Compress
+        """;
+    public const string GpuDetach = Require + """
+
+        if ($vm.State -ne 'Off') { throw 'Shut down the machine first.' }
+        Get-VMGpuPartitionAdapter -VM $vm | Remove-VMGpuPartitionAdapter
+        $b = $p.Before
+        if ($b) { Set-VM -VM $vm -GuestControlledCacheTypes ([bool]$b.Cache) -LowMemoryMappedIoSpace ([uint64]$b.Low) -HighMemoryMappedIoSpace ([uint64]$b.High) -AutomaticStopAction $b.StopAction -CheckpointType $b.CheckpointType -AutomaticCheckpointsEnabled ([bool]$b.AutomaticCheckpoints) }
+        """;
+    // Runs inside the guest over SSH as its administrator: moves the staged driver files into System32 and SysWOW64.
+    public const string GpuStagingRoot = @"C:\ProgramData\Aviary\gpu-staging";
+    public const string GpuStagingInstall = """
+        $ErrorActionPreference = 'Stop'
+        $staging = 'C:\ProgramData\Aviary\gpu-staging'
+        if (!(Test-Path -LiteralPath $staging)) { throw 'No staged GPU driver files.' }
+        foreach ($pair in @(@("$staging\HostDriverStore", "$env:windir\System32\HostDriverStore"), @("$staging\Windows", $env:windir))) {
+            if (!(Test-Path -LiteralPath $pair[0])) { continue }
+            robocopy $pair[0] $pair[1] /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "Copying $($pair[0]) failed (robocopy $LASTEXITCODE)." }
+        }
+        Remove-Item -LiteralPath $staging -Recurse -Force
+        (Get-ChildItem "$env:windir\System32\HostDriverStore\FileRepository" -Recurse -File).Count
+        """;
+    public const string GpuAdapterCount = Require + "\n@(Get-VMGpuPartitionAdapter -VM $vm).Count";
+    public const string ShutdownAndWait = Require + """
+
+        if ($vm.State -ne 'Off') { Stop-VM -VM $vm -Confirm:$false }
+        if ((Get-VM -Id $vm.Id).State -ne 'Off') { throw 'The guest didn''t shut down. Shut it down inside Windows and try again.' }
         """;
     // Raw RGB565 frame of the guest display, base64.
     public const string Thumbnail = Wmi + """
