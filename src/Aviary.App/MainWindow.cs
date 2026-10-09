@@ -43,7 +43,12 @@ public sealed partial class MainWindow : Window
         navigation.Resources["NavigationViewItemForegroundSelected"] = new SolidColorBrush(Microsoft.UI.Colors.White);
         navigation.PaneHeader = new Border { Padding = new Thickness(18, 28, 12, 24), Child = Ui.Stack(new Image { Source = new SvgImageSource(new Uri("ms-appx:///Assets/Aviary.svg")), Width = 40, Height = 40 }, Ui.Heading(Branding.Name, 24), Ui.Text("Your machines. Your space.", 12, true)) };
         navigation.MenuItems.Add(libraryItem); navigation.MenuItems.Add(runningItem);
-        navigation.PaneFooter = new Border { Padding = new Thickness(20), Child = Ui.Stack(Ui.Text("THIS PC", 11, true), hostLabel) };
+        var paneFooter = new Border { Padding = new Thickness(20), Child = Ui.Stack(Ui.Text("THIS PC", 11, true), hostLabel) };
+        navigation.PaneFooter = paneFooter;
+        // The collapsed rail is 48px wide; the footer would wrap one character per line there.
+        void SyncPaneFooter() => paneFooter.Visibility = navigation.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed;
+        navigation.RegisterPropertyChangedCallback(NavigationView.IsPaneOpenProperty, (_, _) => SyncPaneFooter());
+        SyncPaneFooter();
         page.RowDefinitions.Add(new() { Height = GridLength.Auto }); page.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); page.Children.Add(notice); Grid.SetRow(content, 1); page.Children.Add(content);
         root.SizeChanged += (_, e) => page.Padding = e.NewSize.Width < 700 ? new Thickness(16, 16, 16, 16) : new Thickness(32, 24, 32, 24);
         navigation.Content = page; navigation.SelectedItem = libraryItem; root.Children.Add(navigation); Content = root;
