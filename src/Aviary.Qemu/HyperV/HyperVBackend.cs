@@ -12,6 +12,7 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
 {
     readonly ConcurrentDictionary<Guid, VmConfiguration> machines = new();
     readonly ConcurrentDictionary<Guid, VmState> states = new();
+    readonly Dictionary<Guid, (string Host, string User)> sshEndpoints = new();
     readonly SemaphoreSlim gate = new(1);
     readonly CancellationTokenSource lifetime = new();
     Task? monitor;
@@ -285,6 +286,25 @@ public sealed class HyperVBackend(VmStore store, HostCapabilities host, IHyperVC
             var id = row.GetProperty("Id").GetGuid(); if (!machines.ContainsKey(id)) continue;
             string state = row.GetProperty("State").GetString()!;
             Set(id, MapState(state), row.GetProperty("Error").GetString() ?? (MapState(state) == VmStatus.Error ? "Hyper-V state: " + state : null));
+            if (state != "Running" || !row.TryGetProperty("Ips", out var ips)) continue;
+            var address = ips.EnumerateArray().Select(ip => ip.GetString()).FirstOrDefault();
+            if (address is null) continue;
+            // Read persisted SSH settings: setup can finish after this backend was initialized.
+            var directory = store.DirectoryFor(id);
+            var config = Path.Combine(directory, "config.json");
+            if (!File.Exists(config)) continue;
+            try
+            {
+                var current = VmStore.Deserialize(await File.ReadAllTextAsync(config, token));
+                if (current.Id != id || current.Engine != VmEngine.HyperV || current.HyperVId != machines[id].HyperVId) continue;
+                if (!current.SshEnabled || current.SshUser.Length == 0) { sshEndpoints.Remove(id); continue; }
+                var endpoint = (address, current.SshUser);
+                if (sshEndpoints.TryGetValue(id, out var previous) && previous == endpoint) continue;
+                await GuestSsh.WriteConfigAsync(current, directory, address, 22);
+                sshEndpoints[id] = endpoint;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+            { System.Diagnostics.Trace.TraceWarning("Could not refresh SSH configuration for {0}: {1}", id, ex.Message); }
         }
     }
     async Task MonitorAsync()

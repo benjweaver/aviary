@@ -10,6 +10,33 @@ namespace Aviary.Tests;
 public sealed class HyperVTests
 {
     [Fact]
+    public async Task SavedSshAddressFollowsTheGuestAfterASubnetChange()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "aviary-address-test-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        try
+        {
+            var iso = Path.Combine(root, "guest.iso"); await File.WriteAllTextAsync(iso, "fixture");
+            var store = new VmStore(Path.Combine(root, "Machines")); var commands = new FakeCommands();
+            await using var backend = new HyperVBackend(store, new("X64", 8, 32768, true, "Windows"), commands);
+            var vm = await backend.CreateAsync(new() { Engine = VmEngine.HyperV, DiskFormat = DiskFormat.Vhdx, IsoPath = iso, HyperVSwitch = "Default Switch" });
+            await backend.StartAsync(vm);
+            // SSH was configured after backend creation, as in the setup dialog.
+            await store.SaveAsync(vm with { SshEnabled = true, SshUser = "VM", SshPort = 22 });
+            commands.Address = "172.19.99.174";
+            await backend.RefreshAsync();
+            var config = GuestProvisioning.ConfigPath(store.DirectoryFor(vm.Id));
+            Assert.Contains("HostName 172.19.99.174", await File.ReadAllTextAsync(config));
+            commands.Address = "172.21.201.129";
+            await backend.RefreshAsync();
+            var text = await File.ReadAllTextAsync(config);
+            Assert.Contains("HostName 172.21.201.129", text);
+            Assert.Contains("StrictHostKeyChecking yes", text);
+            Assert.Contains("User \"VM\"", text);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    [Fact]
     public void ExistingConfigurationsStayOnQemu()
     {
         var vm = VmStore.Deserialize("""{"name":"Existing Linux"}""");
@@ -82,6 +109,7 @@ public sealed class HyperVTests
     }
     sealed class FakeCommands : IHyperVCommands
     {
+        public string? Address { get; set; }
         public Guid NativeId { get; } = Guid.NewGuid();
         public List<Guid> Identities { get; } = [];
         public int Calls { get; private set; }
@@ -94,7 +122,7 @@ public sealed class HyperVTests
                 id = data.GetProperty("Id").GetGuid(); await File.WriteAllTextAsync(data.GetProperty("DiskPath").GetString()!, "fixture", token);
                 return JsonSerializer.Serialize(new { Id = NativeId });
             }
-            if (script == HyperVScripts.Status) return JsonSerializer.Serialize(new[] { new { Id = id, State = state, Error = (string?)null } });
+            if (script == HyperVScripts.Status) return JsonSerializer.Serialize(new[] { new { Id = id, State = state, Error = (string?)null, Ips = Address is null ? Array.Empty<string>() : [Address] } });
             Identities.Add(data.GetProperty("HyperVId").GetGuid());
             state = script == HyperVScripts.Pause ? "Paused" : script == HyperVScripts.Shutdown || script == HyperVScripts.ForceOff ? "Off" : "Running";
             return "";

@@ -121,7 +121,11 @@ public static class HyperVScripts
             try {
                 $vm = Get-VM -Id ([guid]$entry.HyperVId)
                 if ($vm.Notes -ne ('Aviary:' + $entry.Id)) { throw 'Hyper-V ownership marker does not match.' }
-                [pscustomobject]@{ Id=$entry.Id; State=$vm.State.ToString(); Error=$null }
+                $ips = @()
+                if ($vm.State -eq 'Running') {
+                    $ips = @((Get-VMNetworkAdapter -VM $vm).IPAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notlike '169.254.*' })
+                }
+                [pscustomobject]@{ Id=$entry.Id; State=$vm.State.ToString(); Error=$null; Ips=$ips }
             } catch { [pscustomobject]@{ Id=$entry.Id; State='Error'; Error=$_.Exception.Message } }
         })
         ConvertTo-Json -InputObject $result -Compress

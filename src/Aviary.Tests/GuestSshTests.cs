@@ -113,6 +113,33 @@ public sealed class GuestSshTests
 
     static GuestSsh.Keys SampleKeys => new("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIClient", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHost");
 
+    [Theory]
+    [InlineData("172.21.192.1", true, true)]
+    [InlineData("0.0.0.0", true, false)]
+    [InlineData("127.0.0.1", true, false)]
+    [InlineData("172.21.192.1", false, false)]
+    public async Task GatewayRefreshRestrictsAccessAndDoesNotRecreateRevokedRules(string gateway, bool ruleExists, bool expectedEnabled)
+    {
+        var installer = GuestSsh.WindowsGatewaySetupScript;
+        var start = installer.IndexOf("$refresh = @'", StringComparison.Ordinal) + "$refresh = @'".Length;
+        var refresh = installer[start..installer.IndexOf("'@", start, StringComparison.Ordinal)];
+        var harness = """
+            $script:enabled=$false; $script:remote='172.19.96.1'
+            function Get-NetFirewallRule { param($Name,$ErrorAction) if($p.RuleExists){[pscustomobject]@{Name=$Name}} }
+            function Get-NetRoute { param($AddressFamily,$DestinationPrefix) [pscustomobject]@{NextHop=$p.Gateway; RouteMetric=0; InterfaceIndex=1} }
+            function Get-NetIPInterface { param($InterfaceIndex,$AddressFamily) [pscustomobject]@{InterfaceMetric=1} }
+            function Get-NetFirewallAddressFilter { process { [pscustomobject]@{RemoteAddress=$script:remote} } }
+            function Disable-NetFirewallRule { process { $script:enabled=$false } }
+            function Enable-NetFirewallRule { process { $script:enabled=$true } }
+            function Set-NetFirewallAddressFilter { param($RemoteAddress) process { $script:remote=$RemoteAddress } }
+            & ([scriptblock]::Create($p.Refresh))
+            [pscustomobject]@{Enabled=$script:enabled;Remote=$script:remote} | ConvertTo-Json -Compress
+            """;
+        using var result = System.Text.Json.JsonDocument.Parse(await new HyperVCommands().RunAsync(harness, new { Gateway = gateway, RuleExists = ruleExists, Refresh = refresh }));
+        Assert.Equal(expectedEnabled, result.RootElement.GetProperty("Enabled").GetBoolean());
+        if (expectedEnabled) Assert.Equal(gateway, result.RootElement.GetProperty("Remote").GetString());
+    }
+
     [Fact]
     public void LinuxSetupScriptIsFilledInAndPosix()
     {
@@ -134,7 +161,14 @@ public sealed class GuestSshTests
         Assert.Contains(@"'C:\ProgramData\Aviary\OpenSSH.msi'", script); Assert.Contains("ADDLOCAL=Server", script);
         Assert.DoesNotContain("__", script);
         Assert.Contains($"'{report}'", script); Assert.Contains($"'{remote}'", script); Assert.Contains(SampleKeys.HostPublicKey, script);
-        await new HyperVCommands().RunAsync("$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseInput($p.Script,[ref]$t,[ref]$e)|Out-Null;if($e.Count){throw ($e|Out-String)}", new { Script = script });
+        // The complete guest setup exceeds Windows' command-line limit when nested in JSON and -EncodedCommand.
+        var path = Path.Combine(Path.GetTempPath(), "aviary-setup-parse-" + Guid.NewGuid() + ".ps1");
+        try
+        {
+            await File.WriteAllTextAsync(path, script);
+            await new HyperVCommands().RunAsync("$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile($p.Path,[ref]$t,[ref]$e)|Out-Null;if($e.Count){throw ($e|Out-String)}", new { Path = path });
+        }
+        finally { File.Delete(path); }
     }
 
     [Fact]

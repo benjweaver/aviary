@@ -77,6 +77,7 @@ try {
     & $sshd -t
     if ($LASTEXITCODE -ne 0) { throw 'sshd rejected its configuration.' }
     Restart-Service sshd
+    __GATEWAY_SETUP__
     Send-Report 'ok' $user
     Write-Host "Aviary SSH is ready for $user. Remove the Aviary-SSH firewall rule and this PC's key from $authorized to revoke it."
 }

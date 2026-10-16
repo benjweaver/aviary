@@ -69,11 +69,14 @@ public static class GuestSsh
         .Replace("__HOST_PUBLIC_KEY__", keys.HostPublicKey, StringComparison.Ordinal)
         .Replace("__REMOTE_ADDRESS__", firewallRemoteAddress, StringComparison.Ordinal)
         .Replace("__REPORT_URL__", reportUrl, StringComparison.Ordinal)
-        .Replace("__OPENSSH_MSI__", openSshMsi, StringComparison.Ordinal);
+        .Replace("__OPENSSH_MSI__", openSshMsi, StringComparison.Ordinal)
+        .Replace("__GATEWAY_SETUP__", firewallRemoteAddress == "gateway" ? WindowsGatewaySetupScript : "", StringComparison.Ordinal);
 
     public static string SetupInstruction(VmConfiguration vm) => vm.OperatingSystem == "Windows"
         ? "Open PowerShell as administrator in the guest (Win+X, then Terminal (Admin)) and leave it focused."
         : "Open a terminal in the guest and leave it focused. No sudo is needed; OpenSSH server, bash and curl or wget must be installed.";
+
+    public static string WindowsGatewaySetupScript => Template("windows-ssh-gateway.ps1");
 
     public static async Task WriteConfigAsync(VmConfiguration vm, string machineDirectory, string hostName, int port)
     {
